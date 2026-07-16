@@ -1,0 +1,17 @@
+{
+  "name": "codex-companion-local",
+  "plugins": [
+    {
+      "name": "codex-companion-hooks",
+      "source": {
+        "source": "local",
+        "path": "./mac/CodexPlugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

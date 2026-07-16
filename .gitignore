@@ -1,0 +1,13 @@
+.build/
+build/
+DerivedData/
+.DS_Store
+sdkconfig
+sdkconfig.old
+managed_components/
+work/
+dist/
+.worktrees/
+.superpowers/brainstorm/
+screenlog.*
+*.log

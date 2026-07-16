@@ -1,0 +1,11 @@
+{
+  "name": "codex-companion-hooks",
+  "version": "0.1.0",
+  "description": "Forwards Codex lifecycle events to the local ESP32 Codex Companion service.",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Codex Companion Hooks",
+    "shortDescription": "Sync Codex lifecycle state to the companion device",
+    "developerName": "Codex Companion"
+  }
+}

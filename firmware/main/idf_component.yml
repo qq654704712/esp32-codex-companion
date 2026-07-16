@@ -1,0 +1,10 @@
+dependencies:
+  idf: ">=5.5.3"
+  # Official Espressif USB Audio Class device component. The UAC firmware is
+  # enabled only after an explicit device-side mode switch, never while the
+  # normal USB Serial/JTAG flashing path is active.
+  espressif/usb_device_uac: ^1.1.0
+  # ESP-IDF 5 keeps mDNS in the official component registry. It is used only
+  # to discover the paired Mac's _codex-companion._tcp service; the CCH2/CCW2
+  # session still authenticates the peer before any control is trusted.
+  espressif/mdns: ^1.11.3
