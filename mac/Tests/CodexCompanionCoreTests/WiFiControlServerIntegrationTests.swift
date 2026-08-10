@@ -103,8 +103,10 @@ final class WiFiControlServerIntegrationTests: XCTestCase {
             discoveryPort: discoveryPort
         )
         let listening = expectation(description: "TCP listener ready")
+        let stopped = expectation(description: "server stops after UDP discovery")
         server.onStateChange = { state in
             if case .listening = state { listening.fulfill() }
+            if state == .stopped { stopped.fulfill() }
         }
         server.start()
         wait(for: [listening], timeout: 3)
@@ -135,10 +137,6 @@ final class WiFiControlServerIntegrationTests: XCTestCase {
 
         // Draining the discovery packet must not leave the server queue stuck
         // in a blocking recvfrom. Stop is queued on that same serial queue.
-        let stopped = expectation(description: "server stops after UDP discovery")
-        server.onStateChange = { state in
-            if state == .stopped { stopped.fulfill() }
-        }
         server.stop()
         wait(for: [stopped], timeout: 3)
     }
