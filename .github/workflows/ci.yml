@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware-host-tests:
+    name: Firmware host tests
+    runs-on: macos-14
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Run C host tests
+        run: ./firmware/host_tests/run.sh
+
+  swift:
+    name: Swift tests and builds
+    runs-on: macos-14
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.4"
+      - name: Run Swift tests
+        run: swift test --package-path mac
+      - name: Build Companion app
+        run: swift build --package-path mac --product CodexCompanion
+      - name: Build simulator
+        run: swift build --package-path mac --product companion-simulator
+
+  repository-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Check whitespace errors
+        run: git diff --check HEAD^ HEAD
+      - name: Check for local absolute paths
+        run: |
+          if git grep -nE '/Users/|/Volumes/|macstudio|nuc-tanhao' -- \
+            ':!.github/workflows/ci.yml' ':!*.pcm' ':!*.png'; then
+            echo "Found a local path or personal identifier in tracked content" >&2
+            exit 1
+          fi

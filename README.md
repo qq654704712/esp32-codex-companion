@@ -1,108 +1,154 @@
 # ESP32-S3 Codex Companion
 
-面向 Waveshare `ESP32-S3-Touch-LCD-1.85B` 的 Codex 桌面伴侣。项目没有绑定任何
-输入法 SDK：设备提供 Wi-Fi/BLE 无线音频与 PTT 事件，macOS 暴露标准 `Codex Mic`
-输入设备，并按用户录制的物理键码快捷键启动或停止当前第三方输入法的语音功能。
+[![CI](https://github.com/qq654704712/esp32-codex-companion/actions/workflows/ci.yml/badge.svg)](https://github.com/qq654704712/esp32-codex-companion/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-当前日常模式是 **Wi-Fi 状态/审批/PTT 控制 + 加密 UDP 麦克风 + 严格输入法兼容标识 + USB 原生备用**：
-设备经局域网自动发现已配对的 Mac，控制和音频帧使用 CCH2 握手派生的独立 CCW2
-ChaCha20-Poly1305 密钥；Wi-Fi 不可用时，下一次 PTT 会回退到 BLE ADPCM。需要
-Mac 端 `Codex Mic` 使用已实测的 USB 兼容 transport 元数据，但音频仍全程来自
-Wi-Fi，手持设备无须接线。真实 USB UAC 只作为其他不兼容应用的硬件备用。
+一个面向 [Waveshare ESP32-S3-Touch-LCD-1.85B](https://www.waveshare.com/esp32-s3-touch-lcd-1.85b.htm) 的开源桌面伴侣：设备负责实体按键、屏幕、音频采集和连接状态，macOS Companion 负责把无线音频接入标准输入设备，并把 Codex 任务状态、审批和额度显示到设备上。
 
-## 模块
+> 项目状态：**可供开发者试用，硬件验收仍在持续进行**。它是独立社区项目，不隶属于 OpenAI、Waveshare 或任何输入法厂商。
 
-- `firmware/`：ESP-IDF 5.5.3 固件、LVGL 设备界面、BLE、音频和主机测试。
-- `mac/`：Swift Companion、通用快捷键配置、Codex Hooks、额度读取、HAL 驱动和
-  360×360 SwiftUI 模拟器。
-- `protocol/`：CBOR/HMAC、BLE 分片、提示选项和 ADPCM 的稳定线协议。
+## 能做什么
 
-Waveshare BSP 以源码形式固定在 `firmware/components/waveshare_bsp/`，来自官方
-仓库提交 `139e6db584f3737fcfc6a958ee83b79fb69d317c`。上游目录携带了与
-该开发板不匹配的 Component Manager 校验元数据，因此本地副本只移除了无效
-校验文件并修正描述字段；准确来源和差异见 `firmware/components/waveshare_bsp/ORIGIN.md`。
-业务代码调用官方
-`bsp_display_start()`、`bsp_audio_codec_microphone_init()` 和
-`bsp_audio_codec_speaker_init()`，不复制或猜测屏幕、触摸、ES7210/ES8311 初始化。
+| 能力 | 说明 |
+| --- | --- |
+| 无线 PTT 语音 | 长按设备 BOOT 采集语音，经 Wi-Fi 加密 UDP 传到 Mac；Wi-Fi 不可用时下一次 PTT 回退到 BLE ADPCM。 |
+| 输入法兼容 | Mac 暴露 `Codex Mic` 输入设备，快捷键由用户录制，支持 `hold`、`togglePair`、`separate` 三种触发模式，不绑定某个输入法 SDK。 |
+| Codex 状态 | Codex Hooks 将任务开始、完成、审批和错误转为设备上的状态、动画和提示音；表盘等非 Codex 页面不会误播任务提示。 |
+| 连接中心 | 设备端提供 Wi-Fi 配网、主机发现、恢复配对、USB MIC 备用模式和真实连接状态。 |
+| 安全传输 | 恢复配对用双方确认的短 SAS；Wi-Fi 控制和音频会话使用独立的 CCH2/CCW2 密钥与 ChaCha20-Poly1305。 |
+| USB 备用 | 对不接受虚拟 `Codex Mic` 的应用，可切换为真实 USB UAC 麦克风；USB 音频和刷机共用 USB PHY。 |
+| 开发工具 | SwiftUI 模拟器、Swift CLI、协议 golden vector、C 主机测试和 macOS XCTest。 |
 
-## 当前可运行内容
+## 架构概览
 
-```bash
-cd mac
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run codex-companion quota
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run codex-companion doctor
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run codex-companion profile record
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift run codex-companion daemon
+```mermaid
+flowchart LR
+    Device[ESP32-S3 设备\n屏幕 / BOOT / 麦克风] -->|CCH2/CCW2 加密 Wi-Fi| Mac[macOS Companion\nSwift / CoreBluetooth / Network]
+    Device -->|BLE ADPCM 回退| Mac
+    Mac -->|Codex Mic| IME[第三方输入法]
+    Mac -->|Hooks / 状态 / 额度| Codex[Codex 桌面应用]
+    Device -->|USB UAC 备用| USBApp[不接受虚拟麦克风的应用]
 ```
 
-运行模拟器可使用 Codex 的 Run 按钮，或执行：
+## 硬件与软件要求
+
+- 硬件：Waveshare `ESP32-S3-Touch-LCD-1.85B`，当前以 Rev1.1 为目标。
+- macOS：14.0 或更高版本；Swift 6 工具链（通常随 Xcode 提供）。
+- 固件：ESP-IDF 6.0.2 是仓库脚本的推荐版本；组件声明的最低兼容版本为 5.5.3。若使用其他版本，请先完成固件构建和实机回归。
+- 可选：`clang`、`pkg-config`、OpenSSL 开发包（运行固件 C 主机测试时需要）。
+
+## 五分钟开始
 
 ```bash
-./script/build_and_run.sh --verify
-```
+git clone https://github.com/qq654704712/esp32-codex-companion.git
+cd esp32-codex-companion
 
-固件主机测试：
-
-```bash
+# 先跑不需要硬件的测试
 ./firmware/host_tests/run.sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --package-path mac
 ```
 
-连接实机前可先运行只读预检（不会刷写、复位或改变系统麦克风）：
+### 构建 macOS Companion
 
 ```bash
-./script/hardware_preflight.sh
+# 构建并运行命令行工具
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift run --package-path mac codex-companion doctor
+
+# 构建 GUI、daemon 和模拟器
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift build --package-path mac --product CodexCompanion
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift build --package-path mac --product companion-simulator
 ```
 
-HAL 驱动的构建、安装和移除脚本位于 `mac/Driver/scripts/`。安装需要管理员权限，
-本仓库不会自动安装或重启 CoreAudio。Codex Hooks 插件位于 `mac/CodexPlugin/`，
-也必须由用户安装并在 Codex 中审核信任：
+需要实际使用设备时执行：
 
 ```bash
-codex plugin marketplace add /path/to/esp32-codex-companion
-codex plugin add codex-companion-hooks@codex-companion-local
+./script/build_and_run.sh run
 ```
 
-上述本地 marketplace 与插件清单已经通过隔离的 `CODEX_HOME` 做过实际安装解析验证；
-这里不会替用户写入当前 Codex 配置。
+首次启动 macOS 可能会请求蓝牙、本地网络、麦克风、辅助功能和钥匙串权限。请只在你信任本项目代码后授予这些权限；`script/build_and_run.sh --verify` 会安装用户级 daemon、启动应用并执行端口/签名检查。
 
-设备到货并准备长期运行时，可手动执行 `mac/scripts/install-companion.sh` 安装用户级
-常驻服务；卸载使用 `mac/scripts/uninstall-companion.sh`。脚本不会安装 HAL 驱动，
-两项安装保持独立，便于回滚。
+### 构建和刷写固件
 
-## Wi-Fi 与 USB 使用
+仓库不会下载 ESP-IDF。请先安装 ESP-IDF 6.0.2 和对应工具链，然后设置路径：
 
-1. 打开 Mac 的 `CodexCompanion.app`。首次使用时，若 macOS 询问“允许 Codex Companion
-   查找并连接本地网络设备”，请选择允许；连接中心会显示“Wi-Fi 日常连接：等待设备”，
-   并在同一行给出可选的 Mac IPv4 备用地址。
-2. 在设备顶部点 `LINK`，点 `WI-FI SETUP (PHONE / MAC)`；屏幕会显示一次性热点名、
-   密码及 `192.168.4.1`。用手机或 Mac 连入该热点，打开该地址并输入 2.4 GHz Wi-Fi
-   的 SSID/密码。
-3. 设备取得 IP 后，会通过 `_codex-companion._tcp` 自动发现 Mac 并完成已配对密钥
-   握手。若路由器禁用组播、或 Mac 尚未授权本地网络，请把连接中心显示的 Mac IPv4
-   填入网页的 `Mac IPv4 fallback`；设备会保存这个备用端点，并且仍以已配对密钥认证。
-   Mac 连接中心显示“已连接”才表示控制和 UDP `49154` 音频端点均可用。正常无线使用
-   时按住 BOOT 即通过 `Codex Mic` 输入；一次按住期间不会在 Wi-Fi/BLE 之间切换。
-   松开 BOOT 后设备保留 8 秒待发送窗口；在窗口内短按两次 BOOT 才会让 Mac 注入
-   Return 提交文字。第一次短按只进入确认态，第二次可在原 8 秒窗口结束前完成；
-   长按会开始下一次语音，不会误发。
-4. 产品驱动默认使用严格输入法兼容标识；豆包输入法 0.9.4 已实测能在设备
-   不接 USB 时通过 `Codex Mic` 识别并转成文字。如其他应用仍拒绝该输入，
-   才在设备 `LINK` 内启用 `USB MIC` 硬件备用。
-5. 更换 Mac、配对密钥失效或 BLE 长期无法恢复时，在设备 `LINK` 内长按
-   `RESET BLE PAIRING` 1.5 秒。设备会删除旧 BLE bond 与应用配对密钥并重新广播；
-   保持 Companion 常驻运行即可重新配对。若 macOS 仍保留旧系统 bond，请在系统蓝牙
-   设置中忽略旧的 `Codex Companion` 后等待自动扫描。
+```bash
+export IDF_PATH=/path/to/esp-idf
+export IDF_TOOLS_PATH=/path/to/idf-tools
+./firmware/build.sh
+```
 
-USB 麦克风模式占用同一 USB PHY，不能同时作为常规串口烧录/日志口。恢复刷机时必须：
-**先断电 → 按住 BOOT → 插入数据线 → 插入后立即松开 BOOT**。不要等“刷完后”才松键。
+刷写和串口监视使用 ESP-IDF 的标准命令。端口和下载模式取决于你的板卡：
 
-> 安全边界：当前 SoftAP 热点使用每次触发生成的 WPA2 密码，局域网控制链路已加密；
-> 但 Wi-Fi 凭据仍由 ESP-IDF 的普通 NVS 存储。量产前必须完成 secure-NVS / Flash
-> Encryption / Secure Boot 迁移和实机验证，不能把当前构建视为量产安全配置。
+```bash
+source "$IDF_PATH/export.sh"
+idf.py -C firmware -B build-v6.0.2 flash monitor
+```
 
-## 硬件验证边界
+如果设备处于 USB MIC 模式，USB PHY 不再是普通串口/刷机口。恢复刷机请严格执行：**断电 → 按住 BOOT → 插入数据线 → 插入后立即松开 BOOT**。
 
-构建与协议测试并不等于实机验收。仍需按 `docs/hardware-validation.md` 验证屏幕、
-触摸、双麦克风、USB UAC 枚举、mDNS、BLE MTU、不同输入法和端到端延迟；在设备未
-连接到本机时，不应把这些项目标记为已验证。
+## 第一次配对和使用
+
+1. 启动 `CodexCompanion.app`，在设备上打开 `LINK`。
+2. 进入 `WI-FI SETUP (PHONE / MAC)`，连接设备显示的一次性热点，在 `192.168.4.1` 输入 2.4 GHz Wi-Fi 信息；组播不可用时同时填写 Mac IPv4 备用地址。
+3. 在 Mac 连接中心搜索设备，按屏幕提示完成恢复配对，并核对两端显示的短 SAS。只要密钥未确认，发现到的主机不能控制设备或接收音频。
+4. Mac 连接中心显示 `CONNECTED` 后，运行 `codex-companion profile record` 录制输入法的语音快捷键。先在安全文本框测试，再把配置切换为日常使用。
+5. 长按 BOOT 开始语音，松开结束；松开后的 8 秒窗口内短按两次 BOOT 才会提交文字。
+
+更完整的配网、配对、USB MIC 和故障恢复说明见 [docs/getting-started.md](docs/getting-started.md) 与 [docs/connection-center.md](docs/connection-center.md)。
+
+## CLI 常用命令
+
+```bash
+swift run --package-path mac codex-companion doctor
+swift run --package-path mac codex-companion input-sources
+swift run --package-path mac codex-companion quota
+swift run --package-path mac codex-companion profile list
+swift run --package-path mac codex-companion profile record
+swift run --package-path mac codex-companion profile test <id>
+swift run --package-path mac codex-companion daemon
+```
+
+`profile record` 会发送测试快捷键，请先把光标放在不会造成破坏的文本框中。配置保存在当前用户目录；不要把导出的 profile JSON 或配对密钥提交到 Git。
+
+## 仓库结构
+
+```text
+firmware/       ESP-IDF 固件、LVGL 界面、BLE/Wi-Fi/音频和 C 主机测试
+mac/             Swift Companion、CLI、SwiftUI 模拟器、Codex Hooks 和 HAL 驱动
+protocol/        CBOR/HMAC、配对、BLE 分片、Wi-Fi 音频和 golden vector
+docs/            上手、架构、连接中心、硬件验证与发布检查清单
+script/          macOS 构建运行和只读硬件预检
+```
+
+Waveshare BSP 以源码固定在 `firmware/components/waveshare_bsp/`，来源和本地差异记录在 [ORIGIN.md](firmware/components/waveshare_bsp/ORIGIN.md)；其第三方许可证仍以各目录中的许可证文件为准。
+
+## 验证边界
+
+| 层级 | 当前状态 |
+| --- | --- |
+| Swift 单元/集成测试 | CI 和本地均执行 `swift test`。 |
+| 固件 C 主机测试 | CI 和本地均执行 `firmware/host_tests/run.sh`。 |
+| 固件完整 ESP-IDF 构建 | 需要用户本机安装 IDF；CI 不假装拥有硬件 SDK。 |
+| 真实设备 | 屏幕、触摸、双麦克风、USB UAC、mDNS、BLE MTU、输入法兼容和延迟需按 [docs/hardware-validation.md](docs/hardware-validation.md) 在你的板卡上复测。 |
+| 量产安全 | 当前构建不是量产安全配置；secure NVS、Flash Encryption、Secure Boot、OTA 策略仍需独立验证。 |
+
+## 相关文档
+
+- [上手、配对与故障恢复](docs/getting-started.md)
+- [架构与数据流](docs/architecture.md)
+- [Connection Center](docs/connection-center.md)
+- [协议总览](protocol/README.md)
+- [硬件验证清单](docs/hardware-validation.md)
+- [发布检查清单](docs/release-checklist.md)
+- [贡献指南](CONTRIBUTING.md)
+- [安全问题报告](SECURITY.md)
+
+## 贡献与许可证
+
+欢迎提交问题、文档改进、协议实现和测试。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；安全漏洞不要在公开 Issue 中披露，请按 [SECURITY.md](SECURITY.md) 联系维护者。
+
+本项目采用 [Apache License 2.0](LICENSE)。Waveshare BSP、字体、音频和其他第三方内容的授权以其随附许可证和来源说明为准。

@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose an improvement with a clear user or hardware outcome.
+title: "[Feature]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is difficult or impossible for a user today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior, including failure handling.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Explain host tests, Swift tests, protocol vectors, or physical-device checks needed.
+    validations:
+      required: true
