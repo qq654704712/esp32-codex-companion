@@ -1,6 +1,8 @@
 #include "wifi_transport.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <string.h>
 
 #include "ble_transport.h"
@@ -30,11 +32,15 @@ static const uint8_t k_discovery_response[] = "CCHOST2";
 static const char *TAG = "cc_wifi_link";
 static cc_wifi_control_fn g_control_callback;
 static SemaphoreHandle_t g_socket_lock;
+static SemaphoreHandle_t g_audio_lock;
 static int g_socket = -1;
+static int g_audio_socket = -1;
 static bool g_connected;
+static bool g_audio_available;
 static cc_wifi_session_keys_t g_keys;
 static uint64_t g_session_id;
 static uint32_t g_outbound_sequence;
+static uint32_t g_audio_sequence;
 static uint64_t g_last_missing_secret_log_ms;
 
 static uint64_t now_ms(void) {
@@ -65,14 +71,46 @@ static bool receive_exact(int socket_fd, uint8_t *output, size_t length) {
 
 static void mark_disconnected(int socket_fd) {
     if (socket_fd >= 0) shutdown(socket_fd, SHUT_RDWR);
-    if (socket_fd >= 0) close(socket_fd);
-    if (g_socket_lock) xSemaphoreTake(g_socket_lock, portMAX_DELAY);
-    if (g_socket == socket_fd) g_socket = -1;
     g_connected = false;
+    g_audio_available = false;
+    if (g_socket_lock) xSemaphoreTake(g_socket_lock, portMAX_DELAY);
+    if (g_socket == socket_fd) {
+        close(socket_fd);
+        g_socket = -1;
+    }
+    if (g_socket_lock) xSemaphoreGive(g_socket_lock);
+    if (g_audio_lock) xSemaphoreTake(g_audio_lock, portMAX_DELAY);
+    if (g_audio_socket >= 0) {
+        close(g_audio_socket);
+        g_audio_socket = -1;
+    }
+    if (g_audio_lock) xSemaphoreGive(g_audio_lock);
     memset(&g_keys, 0, sizeof(g_keys));
     g_session_id = 0;
     g_outbound_sequence = 0;
-    if (g_socket_lock) xSemaphoreGive(g_socket_lock);
+    g_audio_sequence = 0;
+}
+
+static bool prepare_audio_socket(int control_socket) {
+    struct sockaddr_in peer = {0};
+    socklen_t peer_length = sizeof(peer);
+    if (getpeername(control_socket, (struct sockaddr *)&peer, &peer_length) != 0 ||
+        peer.sin_family != AF_INET) {
+        return false;
+    }
+    const int audio_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (audio_socket < 0) return false;
+    const int flags = fcntl(audio_socket, F_GETFL, 0);
+    peer.sin_port = htons(CC_WIFI_AUDIO_PORT);
+    if (flags < 0 || fcntl(audio_socket, F_SETFL, flags | O_NONBLOCK) != 0 ||
+        connect(audio_socket, (struct sockaddr *)&peer, sizeof(peer)) != 0) {
+        close(audio_socket);
+        return false;
+    }
+    g_audio_socket = audio_socket;
+    g_audio_available = true;
+    g_audio_sequence = 0;
+    return true;
 }
 
 static bool connect_to_ipv4(uint32_t address, uint16_t port, int *socket_fd) {
@@ -158,6 +196,16 @@ static bool run_authenticated_connection(int socket_fd, const char *transport_na
         close(socket_fd);
         return false;
     }
+    if (g_audio_lock) xSemaphoreTake(g_audio_lock, portMAX_DELAY);
+    if (!prepare_audio_socket(socket_fd)) {
+        ESP_LOGW(TAG, "authenticated Wi-Fi control has no UDP audio socket");
+        memset(&g_keys, 0, sizeof(g_keys));
+        g_session_id = 0;
+        if (g_audio_lock) xSemaphoreGive(g_audio_lock);
+        close(socket_fd);
+        return false;
+    }
+    if (g_audio_lock) xSemaphoreGive(g_audio_lock);
     if (g_socket_lock) xSemaphoreTake(g_socket_lock, portMAX_DELAY);
     g_socket = socket_fd;
     g_connected = true;
@@ -307,7 +355,9 @@ void cc_wifi_transport_start(cc_wifi_control_fn control_callback) {
     if (g_socket_lock) return;
     g_control_callback = control_callback;
     g_socket_lock = xSemaphoreCreateMutex();
-    if (!g_socket_lock || xTaskCreate(wifi_transport_task, "cc_wifi_link", 6144,
+    g_audio_lock = xSemaphoreCreateMutex();
+    if (!g_socket_lock || !g_audio_lock ||
+        xTaskCreate(wifi_transport_task, "cc_wifi_link", 6144,
                                       NULL, 5, NULL) != pdPASS) {
         ESP_LOGE(TAG, "failed to start Wi-Fi transport task");
     }
@@ -315,6 +365,10 @@ void cc_wifi_transport_start(cc_wifi_control_fn control_callback) {
 
 bool cc_wifi_transport_is_connected(void) {
     return g_connected;
+}
+
+bool cc_wifi_transport_is_audio_available(void) {
+    return g_connected && g_audio_available;
 }
 
 bool cc_wifi_transport_send_control(const uint8_t *data, size_t length) {
@@ -347,5 +401,44 @@ bool cc_wifi_transport_send_control(const uint8_t *data, size_t length) {
     if (sent) sent = send_all(socket_fd, prefix, sizeof(prefix)) &&
                      send_all(socket_fd, packet, packet_length);
     xSemaphoreGive(g_socket_lock);
+    return sent;
+}
+
+bool cc_wifi_transport_send_audio_pcm16(const int16_t *samples,
+                                        size_t sample_count) {
+    if (!samples || sample_count != CC_WIFI_AUDIO_SAMPLE_COUNT || !g_audio_lock) {
+        return false;
+    }
+    xSemaphoreTake(g_audio_lock, portMAX_DELAY);
+    if (!g_connected || !g_audio_available || g_audio_socket < 0 ||
+        g_audio_sequence == UINT32_MAX) {
+        xSemaphoreGive(g_audio_lock);
+        return false;
+    }
+    const uint32_t sequence = ++g_audio_sequence;
+    uint8_t nonce[CC_WIFI_NONCE_SIZE];
+    cc_wifi_make_nonce(g_session_id, sequence, nonce);
+    const cc_wifi_frame_t frame = {
+        .kind = CC_WIFI_FRAME_AUDIO,
+        .session_id = g_session_id,
+        .sequence = sequence,
+        .timestamp_ms = now_ms(),
+        .payload = (const uint8_t *)samples,
+        .payload_len = sample_count * sizeof(*samples),
+    };
+    uint8_t packet[CC_WIFI_MAX_PACKET_SIZE];
+    size_t packet_length = 0;
+    bool sent = cc_wifi_encode_frame(&frame, g_keys.audio_key, nonce, packet,
+                                     sizeof(packet), &packet_length) == CC_WIFI_WIRE_OK;
+    if (sent) {
+        const int result = send(g_audio_socket, packet, packet_length, 0);
+        sent = result == (int)packet_length;
+        // UDP backpressure drops only this frame. It never tears down or blocks
+        // the authenticated TCP control link.
+        if (!sent && errno != EAGAIN && errno != EWOULDBLOCK) {
+            ESP_LOGW(TAG, "UDP audio send failed errno=%d", errno);
+        }
+    }
+    xSemaphoreGive(g_audio_lock);
     return sent;
 }

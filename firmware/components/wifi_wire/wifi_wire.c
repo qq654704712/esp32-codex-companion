@@ -4,8 +4,7 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
-#include "mbedtls/chachapoly.h"
-#include "mbedtls/md.h"
+#include "psa/crypto.h"
 #else
 #include <CommonCrypto/CommonHMAC.h>
 #include <CommonCrypto/CommonDigest.h>
@@ -51,10 +50,23 @@ static cc_wifi_wire_result_t hmac_sha256(const uint8_t *key, size_t key_len,
                                          const uint8_t *input, size_t input_len,
                                          uint8_t output[CC_WIFI_KEY_SIZE]) {
 #ifdef ESP_PLATFORM
-    const mbedtls_md_info_t *info =
-        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (info == NULL || mbedtls_md_hmac(info, key, key_len, input, input_len,
-                                        output) != 0) {
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
+    const psa_algorithm_t algorithm = PSA_ALG_HMAC(PSA_ALG_SHA_256);
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_HMAC);
+    psa_set_key_bits(&attributes, key_len * 8);
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
+    psa_set_key_algorithm(&attributes, algorithm);
+
+    psa_status_t status = psa_import_key(&attributes, key, key_len, &key_id);
+    size_t output_len = 0;
+    if (status == PSA_SUCCESS) {
+        status = psa_mac_compute(key_id, algorithm, input, input_len, output,
+                                 CC_WIFI_KEY_SIZE, &output_len);
+        (void)psa_destroy_key(key_id);
+    }
+    psa_reset_key_attributes(&attributes);
+    if (status != PSA_SUCCESS || output_len != CC_WIFI_KEY_SIZE) {
         return CC_WIFI_WIRE_CRYPTO;
     }
 #else
@@ -66,8 +78,10 @@ static cc_wifi_wire_result_t hmac_sha256(const uint8_t *key, size_t key_len,
 static cc_wifi_wire_result_t sha256(const uint8_t *input, size_t input_len,
                                     uint8_t output[CC_WIFI_KEY_SIZE]) {
 #ifdef ESP_PLATFORM
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (info == NULL || mbedtls_md(info, input, input_len, output) != 0) {
+    size_t output_len = 0;
+    if (psa_hash_compute(PSA_ALG_SHA_256, input, input_len, output,
+                         CC_WIFI_KEY_SIZE, &output_len) != PSA_SUCCESS ||
+        output_len != CC_WIFI_KEY_SIZE) {
         return CC_WIFI_WIRE_CRYPTO;
     }
 #else
@@ -107,15 +121,29 @@ static cc_wifi_wire_result_t encrypt(const uint8_t key[CC_WIFI_KEY_SIZE],
                                      const uint8_t *plain, size_t plain_len,
                                      uint8_t *cipher, uint8_t tag[CC_WIFI_TAG_SIZE]) {
 #ifdef ESP_PLATFORM
-    mbedtls_chachapoly_context context;
-    mbedtls_chachapoly_init(&context);
-    int result = mbedtls_chachapoly_setkey(&context, key);
-    if (result == 0) {
-        result = mbedtls_chachapoly_encrypt_and_tag(
-            &context, plain_len, nonce, aad, aad_len, plain, cipher, tag);
+    if (tag != cipher + plain_len) return CC_WIFI_WIRE_INVALID_ARGUMENT;
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_CHACHA20);
+    psa_set_key_bits(&attributes, CC_WIFI_KEY_SIZE * 8);
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_ENCRYPT);
+    psa_set_key_algorithm(&attributes, PSA_ALG_CHACHA20_POLY1305);
+
+    psa_status_t status = psa_import_key(&attributes, key, CC_WIFI_KEY_SIZE,
+                                         &key_id);
+    size_t output_len = 0;
+    if (status == PSA_SUCCESS) {
+        status = psa_aead_encrypt(
+            key_id, PSA_ALG_CHACHA20_POLY1305, nonce, CC_WIFI_NONCE_SIZE, aad,
+            aad_len, plain, plain_len, cipher, plain_len + CC_WIFI_TAG_SIZE,
+            &output_len);
+        (void)psa_destroy_key(key_id);
     }
-    mbedtls_chachapoly_free(&context);
-    return result == 0 ? CC_WIFI_WIRE_OK : CC_WIFI_WIRE_CRYPTO;
+    psa_reset_key_attributes(&attributes);
+    return status == PSA_SUCCESS &&
+                   output_len == plain_len + CC_WIFI_TAG_SIZE
+               ? CC_WIFI_WIRE_OK
+               : CC_WIFI_WIRE_CRYPTO;
 #else
     EVP_CIPHER_CTX *context = EVP_CIPHER_CTX_new();
     int result = 0;
@@ -142,15 +170,28 @@ static cc_wifi_wire_result_t decrypt(const uint8_t key[CC_WIFI_KEY_SIZE],
                                      const uint8_t tag[CC_WIFI_TAG_SIZE],
                                      uint8_t *plain) {
 #ifdef ESP_PLATFORM
-    mbedtls_chachapoly_context context;
-    mbedtls_chachapoly_init(&context);
-    int result = mbedtls_chachapoly_setkey(&context, key);
-    if (result == 0) {
-        result = mbedtls_chachapoly_auth_decrypt(
-            &context, cipher_len, nonce, aad, aad_len, tag, cipher, plain);
+    if (tag != cipher + cipher_len) return CC_WIFI_WIRE_INVALID_ARGUMENT;
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_CHACHA20);
+    psa_set_key_bits(&attributes, CC_WIFI_KEY_SIZE * 8);
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_DECRYPT);
+    psa_set_key_algorithm(&attributes, PSA_ALG_CHACHA20_POLY1305);
+
+    psa_status_t status = psa_import_key(&attributes, key, CC_WIFI_KEY_SIZE,
+                                         &key_id);
+    size_t output_len = 0;
+    if (status == PSA_SUCCESS) {
+        status = psa_aead_decrypt(
+            key_id, PSA_ALG_CHACHA20_POLY1305, nonce, CC_WIFI_NONCE_SIZE, aad,
+            aad_len, cipher, cipher_len + CC_WIFI_TAG_SIZE, plain, cipher_len,
+            &output_len);
+        (void)psa_destroy_key(key_id);
     }
-    mbedtls_chachapoly_free(&context);
-    return result == 0 ? CC_WIFI_WIRE_OK : CC_WIFI_WIRE_AUTHENTICATION;
+    psa_reset_key_attributes(&attributes);
+    return status == PSA_SUCCESS && output_len == cipher_len
+               ? CC_WIFI_WIRE_OK
+               : CC_WIFI_WIRE_AUTHENTICATION;
 #else
     EVP_CIPHER_CTX *context = EVP_CIPHER_CTX_new();
     int result = 0;

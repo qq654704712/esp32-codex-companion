@@ -11,8 +11,12 @@ dependencies:
   lvgl/lvgl: '>=8,<10'
   espressif/esp_lcd_st77916: ^2.0.1
   espressif/bq27220: ^0.1.1
-  waveshare/pcf85063a: ^1.0.1
-  waveshare/qmi8658: ^1.0.1
+  waveshare/pcf85063a:
+    version: ^1.0.1
+    override_path: dependencies/pcf85063a
+  waveshare/qmi8658:
+    version: ^1.0.1
+    override_path: dependencies/qmi8658
 description: Board Support Package for Waveshare ESP32-S3-Touch-LCD-1.85B
 repository: https://github.com/waveshareteam/ESP32-S3-Touch-LCD-1.85B.git
 repository_info:

@@ -17,8 +17,52 @@ struct CompanionDashboardView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("连接中心")
                         .font(.largeTitle.weight(.semibold))
-                    Text("USB 模式下设备是标准硬件麦克风；本机只负责输入法快捷键与 Codex 状态。")
+                    Text("可在不同电脑之间切换。USB 提供标准麦克风；BLE/Wi-Fi 通过 Companion 协议提供控制、状态和无线语音。")
                         .foregroundStyle(.secondary)
+                }
+
+                GroupBox("选择 Companion 设备") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Button("搜索附近设备") {
+                                service.discoverCompanionDevices()
+                            }
+                            Button("忘记当前选择") {
+                                service.forgetSelectedCompanionDevice()
+                            }
+                            .disabled(service.selectedBLEDeviceID == nil)
+                            Spacer()
+                            Text(service.selectedBLEDeviceID == nil ? "未选择" : "已记住设备")
+                                .foregroundStyle(.secondary)
+                        }
+                        if service.discoveredBLEDevices.isEmpty {
+                            Text("点击搜索后，在设备上进入“连接 → 配对其他设备”，再从列表中选择。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(service.discoveredBLEDevices) { device in
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(device.name)
+                                        Text("\(device.id.uuidString) · RSSI \(device.rssi)")
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Button(
+                                        service.selectedBLEDeviceID == device.id ? "已选择" : "选择并连接"
+                                    ) {
+                                        service.selectCompanionDevice(id: device.id)
+                                    }
+                                    .disabled(service.selectedBLEDeviceID == device.id && service.bleState == .connected)
+                                }
+                                Divider()
+                            }
+                        }
+                        Text("更换电脑时，需要在设备端长按“配对其他设备”清除旧主机密钥；USB 音频可直接连接任何支持标准 UAC 麦克风的主机，Codex 状态与快捷键需要对应平台的 Companion 客户端。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 HStack(alignment: .top, spacing: 14) {
@@ -106,7 +150,7 @@ struct CompanionDashboardView: View {
                 }
 
                 GroupBox("Wi-Fi 配网备用路径") {
-                    Text("设备网页会优先自动发现本机。若网络禁用 Bonjour 组播，或尚未授予本地网络权限，可把下面地址填入设备网页的 Mac IPv4 fallback。")
+                    Text("设备网页会优先自动发现所选主机。若网络禁用 Bonjour 组播，可把下面地址填入设备网页的主机 IPv4 备用地址。")
                         .foregroundStyle(.secondary)
                     if let address = CompanionLANEndpoint.preferredIPv4Address() {
                         HStack {

@@ -3,7 +3,7 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
-#include "mbedtls/md.h"
+#include "psa/crypto.h"
 #else
 #include <CommonCrypto/CommonHMAC.h>
 #endif
@@ -82,10 +82,23 @@ static cc_result_t hmac_sha256(const uint8_t *key, size_t key_len,
                                const uint8_t *data, size_t data_len,
                                uint8_t output[32]) {
 #ifdef ESP_PLATFORM
-    const mbedtls_md_info_t *info =
-        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    if (info == NULL ||
-        mbedtls_md_hmac(info, key, key_len, data, data_len, output) != 0) {
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
+    const psa_algorithm_t algorithm = PSA_ALG_HMAC(PSA_ALG_SHA_256);
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_HMAC);
+    psa_set_key_bits(&attributes, key_len * 8);
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
+    psa_set_key_algorithm(&attributes, algorithm);
+
+    psa_status_t status = psa_import_key(&attributes, key, key_len, &key_id);
+    size_t output_len = 0;
+    if (status == PSA_SUCCESS) {
+        status = psa_mac_compute(key_id, algorithm, data, data_len, output, 32,
+                                 &output_len);
+        (void)psa_destroy_key(key_id);
+    }
+    psa_reset_key_attributes(&attributes);
+    if (status != PSA_SUCCESS || output_len != 32) {
         return CC_ERR_CRYPTO;
     }
 #else
@@ -102,7 +115,7 @@ static bool constant_time_equal(const uint8_t *left, const uint8_t *right,
 }
 
 static bool valid_message_type(uint64_t raw) {
-    return raw >= CC_MSG_HELLO && raw <= CC_MSG_ERROR;
+    return raw >= CC_MSG_HELLO && raw <= CC_MSG_WEATHER_CONFIG;
 }
 
 static cc_result_t read_byte(reader_t *reader, uint8_t *value) {

@@ -19,6 +19,9 @@ struct CompanionSettingsView: View {
             .padding()
             .tabItem { Label("常规", systemImage: "gearshape") }
 
+            WeatherConfigurationForm(model: model)
+            .tabItem { Label("天气", systemImage: "cloud.sun") }
+
             Form {
                 Text("设备通过自定义 BLE 控制和音频流连接；Codex Mic 是 macOS 的虚拟输入设备。按键映射请在主窗口的“按键映射”中设置。")
                     .foregroundStyle(.secondary)

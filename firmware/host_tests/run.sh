@@ -44,6 +44,28 @@ clang -std=c17 -Wall -Wextra -Werror \
   "$ROOT/firmware/host_tests/test_wifi_manager.c" \
   "$ROOT/firmware/main/wifi_state.c" \
   -o "$OUT/wifi_manager"
+clang -std=c17 -Wall -Wextra -Werror \
+  -I"$ROOT/firmware/main" \
+  "$ROOT/firmware/host_tests/test_host_profile.c" \
+  "$ROOT/firmware/main/host_profile.c" \
+  -o "$OUT/host_profile"
+clang -std=c17 -Wall -Wextra -Werror \
+  -I"$ROOT/firmware/main" \
+  "$ROOT/firmware/host_tests/test_pairing_manager.c" \
+  "$ROOT/firmware/main/pairing_manager.c" \
+  -o "$OUT/pairing_manager"
+clang -std=c17 -Wall -Wextra -Werror \
+  -I"$ROOT/firmware/main" \
+  "$ROOT/firmware/host_tests/test_connection_center.c" \
+  "$ROOT/firmware/main/connection_center.c" \
+  -o "$OUT/connection_center"
+clang -std=c17 -Wall -Wextra -Werror \
+  -I"$ROOT/firmware/main" \
+  -I"$ROOT/firmware/components/audio_codec/include" \
+  "$ROOT/firmware/host_tests/test_wireless_audio_router.c" \
+  "$ROOT/firmware/main/wireless_audio_router.c" \
+  "$ROOT/firmware/components/audio_codec/audio_codec.c" \
+  -o "$OUT/wireless_audio_router"
 
 "$OUT/control_protocol"
 "$OUT/device_model"
@@ -52,4 +74,9 @@ clang -std=c17 -Wall -Wextra -Werror \
 "$OUT/prompt_payload"
 "$OUT/wifi_wire"
 "$OUT/wifi_manager"
+"$OUT/host_profile"
+"$OUT/pairing_manager"
+"$OUT/connection_center"
+"$OUT/wireless_audio_router"
+"$ROOT/firmware/host_tests/test_ble_runtime_config.sh"
 "$ROOT/firmware/host_tests/test_device_ui_layout.sh"

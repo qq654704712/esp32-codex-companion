@@ -17,4 +17,17 @@ final class ApprovalRiskPolicyTests: XCTestCase {
         XCTAssertFalse(policy.isDeviceSelectable(identifier: "approval.option_4", title: "Other"))
         XCTAssertTrue(policy.isDeviceSelectable(identifier: "approval.allow_once"))
     }
+
+    func testRecognizesInlinePlanAndPermissionButtons() {
+        let policy = ApprovalRiskPolicy()
+        XCTAssertTrue(policy.isInlinePromptButton(
+            identifier: "request_user_input.option.0", title: "继续实施"
+        ))
+        XCTAssertTrue(policy.isInlinePromptButton(
+            identifier: "approval.allow_once", title: "Allow once"
+        ))
+        XCTAssertFalse(policy.isInlinePromptButton(
+            identifier: "sidebar.new_thread", title: "New task"
+        ))
+    }
 }

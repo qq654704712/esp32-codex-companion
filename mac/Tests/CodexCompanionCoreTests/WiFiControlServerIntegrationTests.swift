@@ -16,6 +16,7 @@ final class WiFiControlServerIntegrationTests: XCTestCase {
         )
         let listening = expectation(description: "listener ready")
         let received = expectation(description: "encrypted control delivered")
+        let audioSession = expectation(description: "audio session published")
         let expectedPayload = Data([0xA1, 0x01, 0x02, 0x03])
         server.onStateChange = { state in
             if case .listening = state { listening.fulfill() }
@@ -23,6 +24,13 @@ final class WiFiControlServerIntegrationTests: XCTestCase {
         server.onControlMessage = { payload in
             XCTAssertEqual(payload, expectedPayload)
             received.fulfill()
+        }
+        server.onAuthenticatedSessionChange = { session in
+            guard let session else { return }
+            XCTAssertEqual(session.remoteIPv4, "127.0.0.1")
+            XCTAssertEqual(session.audioKey.count, 32)
+            XCTAssertNotEqual(session.sessionID, 0)
+            audioSession.fulfill()
         }
         server.start()
         wait(for: [listening], timeout: 3)
@@ -80,7 +88,7 @@ final class WiFiControlServerIntegrationTests: XCTestCase {
             }
             hostResponse.fulfill()
         }
-        wait(for: [hostResponse, received], timeout: 3)
+        wait(for: [hostResponse, audioSession, received], timeout: 3)
         device.cancel()
         server.stop()
     }
@@ -124,7 +132,15 @@ final class WiFiControlServerIntegrationTests: XCTestCase {
         }
         wait(for: [reply], timeout: 3)
         probe.cancel()
+
+        // Draining the discovery packet must not leave the server queue stuck
+        // in a blocking recvfrom. Stop is queued on that same serial queue.
+        let stopped = expectation(description: "server stops after UDP discovery")
+        server.onStateChange = { state in
+            if state == .stopped { stopped.fulfill() }
+        }
         server.stop()
+        wait(for: [stopped], timeout: 3)
     }
 }
 #endif

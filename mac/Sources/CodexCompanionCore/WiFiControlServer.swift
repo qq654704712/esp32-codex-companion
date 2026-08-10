@@ -4,6 +4,18 @@ import Darwin
 import Foundation
 import Network
 
+public struct WiFiAuthenticatedSession: Equatable, Sendable {
+    public let sessionID: UInt64
+    public let audioKey: Data
+    public let remoteIPv4: String
+
+    public init(sessionID: UInt64, audioKey: Data, remoteIPv4: String) {
+        self.sessionID = sessionID
+        self.audioKey = audioKey
+        self.remoteIPv4 = remoteIPv4
+    }
+}
+
 /// The Mac-side, Wi-Fi daily-use control endpoint. Discovery is intentionally
 /// separate (Bonjour only advertises this listener); a client must still prove
 /// it has the recovery-pairing secret before it can send a control envelope.
@@ -22,6 +34,7 @@ public final class WiFiControlServer: @unchecked Sendable {
 
     public var onStateChange: (@Sendable (State) -> Void)?
     public var onControlMessage: (@Sendable (Data) -> Void)?
+    public var onAuthenticatedSessionChange: (@Sendable (WiFiAuthenticatedSession?) -> Void)?
 
     private let queue = DispatchQueue(label: "com.codexcompanion.wifi-control")
     private let pairingSecret: Data
@@ -146,6 +159,20 @@ public final class WiFiControlServer: @unchecked Sendable {
             )
             return
         }
+        // A dispatch read source only tells us that at least one datagram is
+        // ready. The drain loop must be non-blocking so its final recvfrom
+        // returns EAGAIN instead of permanently occupying the Wi-Fi queue.
+        // A blocked queue also starves the TCP handshake and stop/state work.
+        let currentFlags = Darwin.fcntl(socketFD, F_GETFL)
+        guard currentFlags >= 0,
+              Darwin.fcntl(socketFD, F_SETFL, currentFlags | O_NONBLOCK) == 0 else {
+            let message = String(cString: strerror(errno))
+            Darwin.close(socketFD)
+            FileHandle.standardError.write(
+                Data("[Codex Wi-Fi] UDP discovery non-blocking setup failed: \(message)\n".utf8)
+            )
+            return
+        }
         let source = DispatchSource.makeReadSource(fileDescriptor: socketFD, queue: queue)
         source.setEventHandler { [weak self] in self?.receiveDiscoveryDatagrams() }
         source.setCancelHandler { Darwin.close(socketFD) }
@@ -186,6 +213,7 @@ public final class WiFiControlServer: @unchecked Sendable {
     }
 
     private func stopOnQueue() {
+        if activeConnection != nil { onAuthenticatedSessionChange?(nil) }
         activeConnection?.cancel()
         pendingConnection?.cancel()
         activeConnection = nil
@@ -219,6 +247,7 @@ public final class WiFiControlServer: @unchecked Sendable {
     private func accept(_ nwConnection: NWConnection) {
         // A companion is one physical device. Replacing an old TCP connection
         // is safer than accidentally applying two concurrent approval streams.
+        if activeConnection != nil { onAuthenticatedSessionChange?(nil) }
         activeConnection?.cancel()
         pendingConnection?.cancel()
         let connection = Connection(
@@ -230,7 +259,12 @@ public final class WiFiControlServer: @unchecked Sendable {
                     if self.pendingConnection === connection {
                         self.pendingConnection = nil
                     }
+                    guard let session = connection.authenticatedSession else {
+                        connection.cancel()
+                        return
+                    }
                     self.activeConnection = connection
+                    self.onAuthenticatedSessionChange?(session)
                     self.transition(.connected)
                 }
             },
@@ -245,6 +279,7 @@ public final class WiFiControlServer: @unchecked Sendable {
                     }
                     if self.activeConnection === connection {
                         self.activeConnection = nil
+                        self.onAuthenticatedSessionChange?(nil)
                         if let port = self.listener?.port?.rawValue {
                             self.transition(.listening(port: port))
                         } else {
@@ -273,11 +308,22 @@ private final class Connection: @unchecked Sendable {
     private let onControl: @Sendable (Data) -> Void
     private let onClosed: @Sendable (Connection) -> Void
     private var framer = WiFiTCPFramer()
-    private var sessionKey: Data?
+    private var sessionKeys: WiFiSessionKeys?
     private var sessionID: UInt64 = 0
     private var inboundReplay = WiFiReplayWindow()
     private var outboundSequence: UInt32 = 0
     private var closed = false
+
+    var authenticatedSession: WiFiAuthenticatedSession? {
+        guard let sessionKeys,
+              case .hostPort(let host, _) = nwConnection.endpoint,
+              case .ipv4(let address) = host else { return nil }
+        return WiFiAuthenticatedSession(
+            sessionID: sessionID,
+            audioKey: sessionKeys.audioKey,
+            remoteIPv4: address.debugDescription
+        )
+    }
 
     init(
         nwConnection: NWConnection,
@@ -313,10 +359,10 @@ private final class Connection: @unchecked Sendable {
                 )
                 let response = try host.encode(pairingSecret: self.pairingSecret)
                 let nonce = try WiFiSessionHandshake.sessionNonce(device: device, host: host)
-                self.sessionKey = try SessionKeyDeriver.derive(
+                self.sessionKeys = try SessionKeyDeriver.derive(
                     pairingSecret: self.pairingSecret,
                     sessionNonce: nonce
-                ).controlKey
+                )
                 self.sessionID = try WiFiSessionHandshake.sessionID(device: device, host: host)
                 self.nwConnection.send(content: response, completion: .contentProcessed { [weak self] error in
                     guard error == nil else { self?.close(); return }
@@ -331,7 +377,7 @@ private final class Connection: @unchecked Sendable {
     }
 
     func send(payload: Data) {
-        guard let sessionKey, !closed else { return }
+        guard let sessionKey = sessionKeys?.controlKey, !closed else { return }
         outboundSequence &+= 1
         let envelope = WiFiControlEnvelope(
             sessionID: sessionID,
@@ -352,7 +398,9 @@ private final class Connection: @unchecked Sendable {
             guard error == nil, let data else { self.close(); return }
             do {
                 for packet in try self.framer.append(data) {
-                    guard let sessionKey else { throw WiFiWireCodecError.invalidFrame }
+                    guard let sessionKey = sessionKeys?.controlKey else {
+                        throw WiFiWireCodecError.invalidFrame
+                    }
                     let envelope = try WiFiWireCodec.decodeControl(packet, key: sessionKey)
                     guard envelope.sessionID == self.sessionID else { throw WiFiWireCodecError.invalidFrame }
                     _ = try self.inboundReplay.accept(

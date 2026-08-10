@@ -11,7 +11,10 @@ let package = Package(
         .executable(name: "companion-simulator", targets: ["CompanionSimulator"]),
     ],
     targets: [
-        .target(name: "CodexCompanionCore"),
+        .target(
+            name: "CodexCompanionCore",
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
         .executableTarget(
             name: "CodexCompanionCLI",
             dependencies: ["CodexCompanionCore"]

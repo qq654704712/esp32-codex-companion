@@ -34,8 +34,8 @@ public final class CodexMicRouteManager: AudioRouteManaging {
         self.confirmationAttempts = max(1, confirmationAttempts)
     }
 
-    public func prepareCodexMic() throws {
-        guard let codexMic = try preferredInputDevice() else {
+    public func prepareInput(_ route: AudioInputRoute) throws {
+        guard let codexMic = try inputDevice(for: route) else {
             throw AudioRouteError.codexMicNotFound
         }
         let previous = try api.defaultInputDevice()
@@ -59,6 +59,15 @@ public final class CodexMicRouteManager: AudioRouteManaging {
             return usbMic
         }
         return try api.deviceID(uid: Self.deviceUID)
+    }
+
+    public func inputDevice(for route: AudioInputRoute) throws -> UInt32? {
+        switch route {
+        case .codexMic:
+            return try api.deviceID(uid: Self.deviceUID)
+        case .usbHardware:
+            return try api.deviceID(named: Self.usbMicrophoneName)
+        }
     }
 }
 

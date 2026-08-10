@@ -61,10 +61,10 @@ public final class USBHIDPTTMonitor {
             return Unmanaged.passUnretained(event)
         }
         if type == .keyDown {
-            FileHandle.standardError.write(Data("[Codex HID] BOOT down\\n".utf8))
+            FileHandle.standardError.write(Data("[Codex HID] BOOT down\n".utf8))
             onButton?(true)
         } else if type == .keyUp {
-            FileHandle.standardError.write(Data("[Codex HID] BOOT up\\n".utf8))
+            FileHandle.standardError.write(Data("[Codex HID] BOOT up\n".utf8))
             onButton?(false)
         }
         // F13 is reserved solely as the device's private transport key and

@@ -27,6 +27,10 @@ typedef enum {
     CC_MSG_AUDIO_LEVEL = 11,
     CC_MSG_ACK = 12,
     CC_MSG_ERROR = 13,
+    CC_MSG_TASK_EVENT = 14,
+    CC_MSG_SUBMIT = 15,
+    CC_MSG_WEATHER_UPDATE = 16,
+    CC_MSG_WEATHER_CONFIG = 17,
 } cc_message_type_t;
 
 typedef enum {

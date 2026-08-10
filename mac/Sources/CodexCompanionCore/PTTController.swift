@@ -1,7 +1,12 @@
 import Foundation
 
+public enum AudioInputRoute: Equatable, Sendable {
+    case codexMic
+    case usbHardware
+}
+
 public protocol AudioRouteManaging: AnyObject {
-    func prepareCodexMic() throws
+    func prepareInput(_ route: AudioInputRoute) throws
     func restorePreviousRoute()
 }
 
@@ -29,6 +34,7 @@ public enum PTTError: Error, Equatable {
     case noActiveSession
     case missingStopShortcut
     case shortcutEmissionFailed
+    case cannotSubmitWhileActive
 }
 
 public final class PTTController {
@@ -49,11 +55,14 @@ public final class PTTController {
         self.keys = keys
     }
 
-    public func buttonDown(profile: VoiceShortcutProfile) throws {
+    public func buttonDown(
+        profile: VoiceShortcutProfile,
+        inputRoute: AudioInputRoute = .codexMic
+    ) throws {
         guard state == .idle else { throw PTTError.sessionAlreadyActive }
         do {
             try audio.start(preRollMs: profile.preRollMs)
-            try route.prepareCodexMic()
+            try route.prepareInput(inputRoute)
             switch profile.triggerMode {
             case .hold:
                 do {
@@ -112,6 +121,11 @@ public final class PTTController {
         guard case .finishing = state else { return }
         route.restorePreviousRoute()
         state = .idle
+    }
+
+    public func submit() throws {
+        guard activeProfile == nil else { throw PTTError.cannotSubmitWhileActive }
+        try keys.tap(.returnKey)
     }
 
     public func cancel() {

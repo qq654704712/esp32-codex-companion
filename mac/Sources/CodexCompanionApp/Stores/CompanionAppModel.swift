@@ -11,20 +11,27 @@ final class CompanionAppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isRecordingShortcut = false
     @Published var backgroundAgentStatus: CompanionRuntimeStatus?
+    @Published var weatherCity = ""
+    @Published var weatherEnabled = true
+    @Published var weatherUsesCelsius = true
+    @Published var weatherRefreshMinutes: UInt8 = 30
 
     let service: CompanionService
     private let profileStore: VoiceProfileStore
     private let inputSourceCatalog: InputSourceCatalog
+    private let weatherStore: WeatherConfigurationStore
     private var statusPoller: Timer?
 
     init(
         service: CompanionService = CompanionService(),
         profileStore: VoiceProfileStore = VoiceProfileStore(),
-        inputSourceCatalog: InputSourceCatalog = InputSourceCatalog()
+        inputSourceCatalog: InputSourceCatalog = InputSourceCatalog(),
+        weatherStore: WeatherConfigurationStore = WeatherConfigurationStore()
     ) {
         self.service = service
         self.profileStore = profileStore
         self.inputSourceCatalog = inputSourceCatalog
+        self.weatherStore = weatherStore
         refresh()
     }
 
@@ -42,6 +49,11 @@ final class CompanionAppModel: ObservableObject {
         inputSources = inputSourceCatalog.installed()
         activeInputSourceID = inputSourceCatalog.currentInputSourceID()
         service.refreshHostStatus()
+        let weather = weatherStore.load()
+        weatherCity = weather.city
+        weatherEnabled = weather.enabled
+        weatherUsesCelsius = weather.usesCelsius
+        weatherRefreshMinutes = weather.refreshMinutes
         do {
             profiles = try profileStore.load().sorted { $0.displayName < $1.displayName }
             if profiles.isEmpty {
@@ -60,6 +72,23 @@ final class CompanionAppModel: ObservableObject {
             errorMessage = nil
         } catch {
             errorMessage = "无法读取按键配置：\(error.localizedDescription)"
+        }
+    }
+
+    func saveWeatherConfiguration() {
+        do {
+            try weatherStore.save(WeatherConfiguration(
+                city: weatherCity,
+                enabled: weatherEnabled,
+                usesCelsius: weatherUsesCelsius,
+                refreshMinutes: weatherRefreshMinutes
+            ))
+            let saved = weatherStore.load()
+            weatherCity = saved.city
+            service.reloadWeatherConfiguration()
+            errorMessage = nil
+        } catch {
+            errorMessage = "天气设置保存失败：\(error.localizedDescription)"
         }
     }
 

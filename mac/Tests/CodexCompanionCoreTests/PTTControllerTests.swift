@@ -7,10 +7,10 @@ final class PTTControllerTests: XCTestCase {
         let controller = dependencies.makeController()
         let profile = makeProfile(mode: .hold)
 
-        try controller.buttonDown(profile: profile)
+        try controller.buttonDown(profile: profile, inputRoute: .usbHardware)
         try controller.buttonUp()
 
-        XCTAssertEqual(dependencies.route.events, [.prepare, .restore])
+        XCTAssertEqual(dependencies.route.events, [.prepare(.usbHardware), .restore])
         XCTAssertEqual(dependencies.audio.events, [.start(preRollMs: 300), .stop(postRollMs: 200)])
         XCTAssertEqual(dependencies.keys.events, [
             .press(profile.startShortcut),
@@ -57,7 +57,7 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertThrowsError(try controller.buttonDown(profile: makeProfile(mode: .hold)))
 
         XCTAssertEqual(dependencies.audio.events, [.start(preRollMs: 300), .cancel])
-        XCTAssertEqual(dependencies.route.events, [.prepare, .restore])
+        XCTAssertEqual(dependencies.route.events, [.prepare(.codexMic), .restore])
         XCTAssertEqual(dependencies.keys.events, [.release(makeProfile(mode: .hold).startShortcut)])
         XCTAssertEqual(controller.state, .failed)
     }
@@ -75,7 +75,7 @@ final class PTTControllerTests: XCTestCase {
         XCTAssertEqual(dependencies.audio.events, [.start(preRollMs: 300)])
     }
 
-    func testDeferredFinishKeepsRouteAndRejectsNewSessionUntilGraceEnds() throws {
+    func testDeferredFinishCanBeCompletedBeforeStartingNextSession() throws {
         let dependencies = Dependencies()
         let controller = dependencies.makeController()
         let profile = makeProfile(mode: .hold)
@@ -84,12 +84,40 @@ final class PTTControllerTests: XCTestCase {
         try controller.buttonUp(deferRouteRestore: true)
 
         XCTAssertEqual(controller.state, .finishing(profileID: profile.id))
-        XCTAssertEqual(dependencies.route.events, [.prepare])
+        XCTAssertEqual(dependencies.route.events, [.prepare(.codexMic)])
         XCTAssertThrowsError(try controller.buttonDown(profile: profile))
 
         controller.finishDeferredRestore()
-        XCTAssertEqual(dependencies.route.events, [.prepare, .restore])
+        XCTAssertEqual(dependencies.route.events, [.prepare(.codexMic), .restore])
         XCTAssertEqual(controller.state, .idle)
+
+        try controller.buttonDown(profile: profile)
+        XCTAssertEqual(controller.state, .active(profileID: profile.id))
+        XCTAssertEqual(dependencies.route.events, [.prepare(.codexMic), .restore, .prepare(.codexMic)])
+    }
+
+    func testSubmitTapsReturnAfterVoiceRelease() throws {
+        let dependencies = Dependencies()
+        let controller = dependencies.makeController()
+        let profile = makeProfile(mode: .hold)
+
+        try controller.buttonDown(profile: profile)
+        try controller.buttonUp(deferRouteRestore: true)
+        try controller.submit()
+
+        XCTAssertEqual(dependencies.keys.events.last, .tap(.returnKey))
+        XCTAssertEqual(controller.state, .finishing(profileID: profile.id))
+    }
+
+    func testSubmitIsRejectedWhileVoiceIsActive() throws {
+        let dependencies = Dependencies()
+        let controller = dependencies.makeController()
+        try controller.buttonDown(profile: makeProfile(mode: .hold))
+
+        XCTAssertThrowsError(try controller.submit()) { error in
+            XCTAssertEqual(error as? PTTError, .cannotSubmitWhileActive)
+        }
+        XCTAssertFalse(dependencies.keys.events.contains(.tap(.returnKey)))
     }
 
     private func makeProfile(mode: VoiceTriggerMode) -> VoiceShortcutProfile {
@@ -114,9 +142,9 @@ private final class Dependencies {
 }
 
 private final class RecordingRoute: AudioRouteManaging {
-    enum Event: Equatable { case prepare, restore }
+    enum Event: Equatable { case prepare(AudioInputRoute), restore }
     var events: [Event] = []
-    func prepareCodexMic() throws { events.append(.prepare) }
+    func prepareInput(_ route: AudioInputRoute) throws { events.append(.prepare(route)) }
     func restorePreviousRoute() { events.append(.restore) }
 }
 

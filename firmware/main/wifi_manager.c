@@ -21,11 +21,15 @@ static bool g_event_loop_owned;
 static esp_netif_t *g_sta_netif;
 static esp_netif_t *g_ap_netif;
 static httpd_handle_t g_portal;
+static bool g_reconnect_after_disconnect;
+static bool g_realtime;
 static char g_portal_hint[96] = "网络：尚未配置";
 static char g_manual_host[CC_WIFI_MANUAL_HOST_MAX_LEN];
 
 #define CC_WIFI_NVS_NAMESPACE "cc_wifi"
 #define CC_WIFI_NVS_HOST_KEY "mac_host"
+#define CC_WIFI_SOFTAP_MIN_INTERNAL_FREE (24U * 1024U)
+#define CC_WIFI_SOFTAP_MIN_INTERNAL_BLOCK (8U * 1024U)
 
 static void set_hint(const char *text) {
     snprintf(g_portal_hint, sizeof(g_portal_hint), "%s", text ? text : "网络：发生错误");
@@ -162,14 +166,35 @@ static esp_err_t portal_configure(httpd_req_t *request) {
     // setup page itself is protected by a per-session WPA2 AP password; a
     // secure-NVS migration remains required before production deployment.
     if (esp_wifi_set_storage(WIFI_STORAGE_FLASH) != ESP_OK ||
-        esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK ||
-        esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK ||
-        esp_wifi_connect() != ESP_OK) {
+        esp_wifi_set_config(WIFI_IF_STA, &config) != ESP_OK) {
         httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Wi-Fi 设置失败");
         return ESP_FAIL;
     }
     cc_wifi_event(&g_model, CC_WIFI_CREDENTIALS_ACCEPTED, 0);
     set_hint("网络：正在连接");
+    // Keep APSTA active until the station obtains an IP. Closing the setup AP
+    // here destroys the HTTP response and, when STA is already associated,
+    // esp_wifi_connect() refuses to switch to the newly saved credentials.
+    // Drive the reconnect from WIFI_EVENT_STA_DISCONNECTED instead.
+    g_reconnect_after_disconnect = true;
+    const esp_err_t disconnect_result = esp_wifi_disconnect();
+    if (disconnect_result == ESP_ERR_WIFI_NOT_CONNECT) {
+        g_reconnect_after_disconnect = false;
+        if (esp_wifi_connect() != ESP_OK) {
+            cc_wifi_event(&g_model, CC_WIFI_CONNECTION_FAILED, 0);
+            set_hint("网络：连接失败");
+            httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                "Wi-Fi 连接失败");
+            return ESP_FAIL;
+        }
+    } else if (disconnect_result != ESP_OK) {
+        g_reconnect_after_disconnect = false;
+        cc_wifi_event(&g_model, CC_WIFI_CONNECTION_FAILED, 0);
+        set_hint("网络：连接失败");
+        httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "Wi-Fi 设置失败");
+        return ESP_FAIL;
+    }
     httpd_resp_sendstr(request, "正在连接，请返回设备屏幕查看状态。");
     // The portal is stopped by IP_EVENT_STA_GOT_IP, outside this HTTPD request
     // callback, so its response context cannot be destroyed mid-send.
@@ -181,6 +206,14 @@ static void wifi_event_handler(void *context, esp_event_base_t base,
     (void)context;
     (void)event_data;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (g_reconnect_after_disconnect) {
+            g_reconnect_after_disconnect = false;
+            if (esp_wifi_connect() != ESP_OK) {
+                cc_wifi_event(&g_model, CC_WIFI_CONNECTION_FAILED, 0);
+                set_hint("网络：连接失败");
+            }
+            return;
+        }
         if (g_model.state == CC_WIFI_STA_CONNECTING ||
             g_model.state == CC_WIFI_CONNECTED) {
             cc_wifi_event(&g_model, CC_WIFI_CONNECTION_FAILED, 0);
@@ -190,6 +223,9 @@ static void wifi_event_handler(void *context, esp_event_base_t base,
         cc_wifi_event(&g_model, CC_WIFI_STA_GOT_IP, 0);
         set_hint("网络：已连接");
         stop_portal();
+        // The response has completed and STA is usable; now retire the setup
+        // AP so the device returns to normal station-only operation.
+        if (g_ap_netif) (void)esp_wifi_set_mode(WIFI_MODE_STA);
     }
 }
 
@@ -212,6 +248,11 @@ bool cc_wifi_start(void) {
     wifi_config_t existing = {0};
     if (esp_wifi_get_config(WIFI_IF_STA, &existing) != ESP_OK) return false;
     if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK || esp_wifi_start() != ESP_OK) return false;
+    // Idle control/weather traffic is bursty, so modem sleep materially
+    // extends battery standby. PTT temporarily disables it through
+    // cc_wifi_set_realtime() before the first 20 ms microphone frame.
+    if (esp_wifi_set_ps(WIFI_PS_MIN_MODEM) != ESP_OK) return false;
+    g_realtime = false;
     g_initialized = true;
     if (existing.sta.ssid[0]) {
         cc_wifi_event(&g_model, CC_WIFI_CREDENTIALS_ACCEPTED, 0);
@@ -223,6 +264,20 @@ bool cc_wifi_start(void) {
     return true;
 }
 
+void cc_wifi_set_realtime(bool enabled) {
+    if (!g_initialized || g_realtime == enabled) return;
+    const wifi_ps_type_t mode = enabled ? WIFI_PS_NONE : WIFI_PS_MIN_MODEM;
+    const esp_err_t result = esp_wifi_set_ps(mode);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "failed to set Wi-Fi power mode: %s",
+                 esp_err_to_name(result));
+        return;
+    }
+    g_realtime = enabled;
+    ESP_LOGI(TAG, "Wi-Fi power mode: %s",
+             enabled ? "microphone realtime" : "idle modem sleep");
+}
+
 bool cc_wifi_begin_provisioning(void) {
     if (!g_initialized && !cc_wifi_start()) return false;
     ESP_LOGI(TAG, "before SoftAP: internal=%u largest=%u psram=%u",
@@ -231,6 +286,19 @@ bool cc_wifi_begin_provisioning(void) {
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     if (!g_ap_netif) g_ap_netif = esp_netif_create_default_wifi_ap();
     if (!g_ap_netif) return false;
+    const size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t internal_largest =
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (internal_free < CC_WIFI_SOFTAP_MIN_INTERNAL_FREE ||
+        internal_largest < CC_WIFI_SOFTAP_MIN_INTERNAL_BLOCK) {
+        ESP_LOGE(TAG,
+                 "refusing SoftAP: internal=%u largest=%u (minimum %u/%u)",
+                 (unsigned)internal_free, (unsigned)internal_largest,
+                 (unsigned)CC_WIFI_SOFTAP_MIN_INTERNAL_FREE,
+                 (unsigned)CC_WIFI_SOFTAP_MIN_INTERNAL_BLOCK);
+        set_hint("网络：启动失败");
+        return false;
+    }
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     const uint32_t random = esp_random();

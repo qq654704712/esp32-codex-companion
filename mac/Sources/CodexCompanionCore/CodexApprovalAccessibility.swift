@@ -38,6 +38,14 @@ public struct ApprovalRiskPolicy: Sendable {
         }
         return true
     }
+
+    public func isInlinePromptButton(identifier: String, title: String) -> Bool {
+        let value = "\(identifier) \(title)".lowercased()
+        return ["request_user_input", "ask_user", "approval", "permission",
+                "prompt-option", "prompt_option", "choice", "allow", "deny",
+                "approve", "reject", "仅一次", "允许", "拒绝", "确认", "取消"]
+            .contains(where: value.contains)
+    }
 }
 
 public enum CodexApprovalError: Error, Equatable {
@@ -54,15 +62,17 @@ public struct CodexApprovalAccessibilityBridge {
     public init() {}
 
     public func options() throws -> [CodexPromptOption] {
-        let (_, dialog) = try currentDialog()
-        return buttonElements(in: dialog).compactMap { element in
-            guard let identifier = stringAttribute(kAXIdentifierAttribute, from: element),
-                  !identifier.isEmpty,
-                  let title = stringAttribute(kAXTitleAttribute, from: element),
+        let (_, root, isDialog) = try currentPromptRoot()
+        return buttonElements(in: root).compactMap { element in
+            let identifier = stringAttribute(kAXIdentifierAttribute, from: element) ?? ""
+            guard let title = stringAttribute(kAXTitleAttribute, from: element),
                   !title.isEmpty,
+                  isDialog || policy.isInlinePromptButton(
+                    identifier: identifier, title: title
+                  ),
                   policy.isDeviceSelectable(identifier: identifier, title: title) else { return nil }
             return CodexPromptOption(
-                id: identifier,
+                id: identifier.isEmpty ? "title:\(title)" : identifier,
                 title: title,
                 requiresLongPress: policy.requiresLongPress(
                     identifier: identifier,
@@ -76,10 +86,11 @@ public struct CodexApprovalAccessibilityBridge {
         if expected.requiresLongPress && !confirmedLongPress {
             throw CodexApprovalError.confirmationRequired
         }
-        let (_, dialog) = try currentDialog()
-        guard let element = buttonElements(in: dialog).first(where: {
-            stringAttribute(kAXIdentifierAttribute, from: $0) == expected.id &&
-            stringAttribute(kAXTitleAttribute, from: $0) == expected.title
+        let (_, root, _) = try currentPromptRoot()
+        guard let element = buttonElements(in: root).first(where: {
+            let identifier = stringAttribute(kAXIdentifierAttribute, from: $0) ?? ""
+            let identifierMatches = expected.id.hasPrefix("title:") || identifier == expected.id
+            return identifierMatches && stringAttribute(kAXTitleAttribute, from: $0) == expected.title
         }) else {
             throw CodexApprovalError.optionNotFound
         }
@@ -87,7 +98,7 @@ public struct CodexApprovalAccessibilityBridge {
         guard status == .success else { throw CodexApprovalError.actionFailed(status) }
     }
 
-    private func currentDialog() throws -> (NSRunningApplication, AXUIElement) {
+    private func currentPromptRoot() throws -> (NSRunningApplication, AXUIElement, Bool) {
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.bundleIdentifier == CodexInteractionGate.bundleIdentifier else {
             throw CodexApprovalError.codexNotFrontmost
@@ -101,10 +112,14 @@ public struct CodexApprovalAccessibilityBridge {
         ) == .success,
               let windowValue else { throw CodexApprovalError.dialogNotFound }
         let window = unsafeDowncast(windowValue, to: AXUIElement.self)
-        guard let dialog = breadthFirst(from: window, limit: 500).first(where: isDialog) else {
-            throw CodexApprovalError.dialogNotFound
+        if let dialog = breadthFirst(from: window, limit: 500).first(where: isDialog) {
+            return (app, dialog, true)
         }
-        return (app, dialog)
+        // Plan-mode questions and request_user_input choices are rendered
+        // inline rather than as AXDialog sheets. The caller only reaches this
+        // fallback while the rollout journal reports an actionable prompt,
+        // and options() further restricts buttons to prompt-like identifiers.
+        return (app, window, false)
     }
 
     private func isDialog(_ element: AXUIElement) -> Bool {

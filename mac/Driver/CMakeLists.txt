@@ -3,11 +3,18 @@ project(CodexMic LANGUAGES CXX)
 
 include(CTest)
 
+option(CODEX_MIC_COMPAT_USB_TRANSPORT
+       "Report the wireless-backed input as USB for strict microphone pickers"
+       ON)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(CodexMic MODULE Sources/CodexMicDriver.cpp)
+if(CODEX_MIC_COMPAT_USB_TRANSPORT)
+    target_compile_definitions(CodexMic PRIVATE CODEX_MIC_COMPAT_USB_TRANSPORT=1)
+endif()
 target_compile_options(CodexMic PRIVATE -Wall -Wextra -Werror -fvisibility=hidden)
 target_link_libraries(CodexMic PRIVATE
     "-framework CoreAudio"

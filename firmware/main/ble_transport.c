@@ -4,12 +4,16 @@
 
 #include "esp_log.h"
 #include "ble_framing.h"
+#include "host_profile.h"
 #include "host/ble_hs.h"
+#include "host/ble_sm.h"
 #include "host/ble_store.h"
 #include "host/ble_uuid.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "nvs.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
@@ -39,6 +43,12 @@ static bool audio_subscribed;
 static cc_ble_control_fn on_control;
 static uint8_t hmac_key[32];
 static bool has_hmac_key;
+static cc_host_profile_t paired_host;
+// NimBLE serializes GATT access callbacks on its host task. Keep the largest
+// encrypted provisioning scratch objects out of that task's stack so the
+// mbedTLS + NVS handshake retains deterministic headroom.
+static uint8_t provisioning_candidate[40U + CC_HOST_ID_MAX + CC_HOST_NAME_MAX];
+static cc_host_profile_t provisioning_profile;
 static cc_ble_reassembler_t control_reassembler;
 static uint16_t outbound_frame_id;
 
@@ -48,11 +58,17 @@ static bool connection_is_encrypted(uint16_t handle) {
            description.sec_state.encrypted;
 }
 
-static void save_hmac_key(const uint8_t key[32]) {
+static bool save_host_profile(const cc_host_profile_t *profile) {
     nvs_handle_t handle;
-    if (nvs_open("cc_security", NVS_READWRITE, &handle) != ESP_OK) return;
-    if (nvs_set_blob(handle, "hmac", key, 32) == ESP_OK) nvs_commit(handle);
+    if (nvs_open("cc_security", NVS_READWRITE, &handle) != ESP_OK) return false;
+    esp_err_t result = nvs_set_blob(handle, "hmac", profile->pairing_secret,
+                                    CC_HOST_SECRET_SIZE);
+    if (result == ESP_OK) result = nvs_set_str(handle, "host_id", profile->host_id);
+    if (result == ESP_OK) result = nvs_set_str(handle, "host_name", profile->display_name);
+    if (result == ESP_OK) result = nvs_set_u8(handle, "host_caps", profile->capabilities);
+    if (result == ESP_OK) result = nvs_commit(handle);
     nvs_close(handle);
+    return result == ESP_OK;
 }
 
 static void load_hmac_key(void) {
@@ -61,6 +77,22 @@ static void load_hmac_key(void) {
     if (nvs_open("cc_security", NVS_READONLY, &handle) != ESP_OK) return;
     if (nvs_get_blob(handle, "hmac", hmac_key, &length) == ESP_OK && length == 32) {
         has_hmac_key = true;
+        memset(&paired_host, 0, sizeof(paired_host));
+        memcpy(paired_host.pairing_secret, hmac_key, sizeof(hmac_key));
+        size_t host_id_length = sizeof(paired_host.host_id);
+        size_t host_name_length = sizeof(paired_host.display_name);
+        if (nvs_get_str(handle, "host_id", paired_host.host_id,
+                        &host_id_length) != ESP_OK ||
+            nvs_get_str(handle, "host_name", paired_host.display_name,
+                        &host_name_length) != ESP_OK) {
+            memcpy(paired_host.host_id, "legacy", sizeof("legacy"));
+            memcpy(paired_host.display_name, "Paired host", sizeof("Paired host"));
+            paired_host.legacy = true;
+        }
+        if (nvs_get_u8(handle, "host_caps", &paired_host.capabilities) != ESP_OK) {
+            paired_host.capabilities = CC_HOST_CAP_BLE_CONTROL | CC_HOST_CAP_BLE_AUDIO |
+                                       CC_HOST_CAP_WIFI_CONTROL | CC_HOST_CAP_WIFI_AUDIO;
+        }
     }
     nvs_close(handle);
 }
@@ -88,24 +120,40 @@ static int gatt_access(uint16_t conn_handle, uint16_t attr_handle,
         return 0;
     }
     if (ble_uuid_cmp(context->chr->uuid, &provision_uuid.u) == 0) {
-        if (length != sizeof(hmac_key) || !connection_is_encrypted(conn_handle)) {
+        if (!connection_is_encrypted(conn_handle) ||
+            length > 40U + CC_HOST_ID_MAX + CC_HOST_NAME_MAX) {
             return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
         }
-        uint8_t candidate[sizeof(hmac_key)];
-        if (ble_hs_mbuf_to_flat(context->om, candidate, sizeof(candidate), NULL) != 0) {
+        if (ble_hs_mbuf_to_flat(context->om, provisioning_candidate,
+                                sizeof(provisioning_candidate), NULL) != 0) {
             return BLE_ATT_ERR_UNLIKELY;
+        }
+        if (!cc_host_profile_decode(provisioning_candidate, length,
+                                    &provisioning_profile)) {
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         }
         if (has_hmac_key) {
             uint8_t difference = 0;
             for (size_t i = 0; i < sizeof(hmac_key); ++i) {
-                difference |= hmac_key[i] ^ candidate[i];
+                difference |= hmac_key[i] ^ provisioning_profile.pairing_secret[i];
             }
-            return difference == 0 ? 0 : BLE_ATT_ERR_WRITE_NOT_PERMITTED;
+            if (difference != 0) return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
+            // The same authenticated host may upgrade legacy metadata in
+            // place. Replacing the secret still requires the user's explicit
+            // "pair another device" hold action.
+            if (!provisioning_profile.legacy &&
+                save_host_profile(&provisioning_profile)) {
+                paired_host = provisioning_profile;
+            }
+            return 0;
         }
-        memcpy(hmac_key, candidate, sizeof(hmac_key));
-        save_hmac_key(hmac_key);
+        if (!save_host_profile(&provisioning_profile)) return BLE_ATT_ERR_UNLIKELY;
+        memcpy(hmac_key, provisioning_profile.pairing_secret, sizeof(hmac_key));
+        paired_host = provisioning_profile;
         has_hmac_key = true;
-        ESP_LOGI(TAG, "application authentication key provisioned");
+        ESP_LOGI(TAG, "host provisioned id=%s name=%s capabilities=0x%02x",
+                 paired_host.host_id, paired_host.display_name,
+                 paired_host.capabilities);
         return 0;
     }
     return BLE_ATT_ERR_UNLIKELY;
@@ -154,7 +202,12 @@ static int gap_event(struct ble_gap_event *event, void *argument) {
             if (event->connect.status == 0) {
                 connection_handle = event->connect.conn_handle;
                 ESP_LOGI(TAG, "connected handle=%u", connection_handle);
-                ble_gap_security_initiate(connection_handle);
+                const int security_result =
+                    ble_gap_security_initiate(connection_handle);
+                if (security_result != 0) {
+                    ESP_LOGW(TAG, "security initiation failed: %d",
+                             security_result);
+                }
             } else {
                 ESP_LOGW(TAG, "connect failed status=0x%02x", event->connect.status);
                 advertise();
@@ -175,6 +228,8 @@ static int gap_event(struct ble_gap_event *event, void *argument) {
             }
             ESP_LOGI(TAG, "subscriptions control=%d audio=%d", control_subscribed,
                      audio_subscribed);
+            ESP_LOGI(TAG, "nimble host stack high-water=%u",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
             break;
         case BLE_GAP_EVENT_ENC_CHANGE:
             ESP_LOGI(TAG, "encryption change status=%d", event->enc_change.status);
@@ -259,6 +314,16 @@ void cc_ble_start(cc_ble_control_fn control_callback) {
     ble_hs_cfg.sm_bonding = 1;
     ble_hs_cfg.sm_sc = 1;
     ble_hs_cfg.sm_mitm = 0;
+    // ESP-IDF leaves both NimBLE key-distribution masks at zero by default.
+    // macOS rejects a bonding request that offers no encryption/identity keys,
+    // so the encrypted provisioning write remains stuck at ATT error 0x0f.
+    // Match Espressif's bonded-peripheral examples and exchange both the LTK
+    // and IRK in each direction. This also lets the bond survive address
+    // rotation and a normal device reboot.
+    ble_hs_cfg.sm_our_key_dist |=
+        BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist |=
+        BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
     ble_att_set_preferred_mtu(247);
     ESP_ERROR_CHECK(ble_gatts_count_cfg(services));
@@ -306,6 +371,12 @@ bool cc_ble_copy_hmac_key(uint8_t output[32]) {
     return true;
 }
 
+bool cc_ble_copy_host_profile(cc_host_profile_t *output) {
+    if (!has_hmac_key || output == NULL) return false;
+    *output = paired_host;
+    return true;
+}
+
 bool cc_ble_clear_pairing(void) {
     // Pairing reset is explicitly user-triggered in the Connection Center.
     // Clear both layers together: leaving either a BLE bond or the app HMAC
@@ -316,12 +387,16 @@ bool cc_ble_clear_pairing(void) {
     if (nvs_open("cc_security", NVS_READWRITE, &handle) == ESP_OK) {
         key_result = nvs_erase_key(handle, "hmac");
         if (key_result == ESP_ERR_NVS_NOT_FOUND) key_result = ESP_OK;
+        if (key_result == ESP_OK) (void)nvs_erase_key(handle, "host_id");
+        if (key_result == ESP_OK) (void)nvs_erase_key(handle, "host_name");
+        if (key_result == ESP_OK) (void)nvs_erase_key(handle, "host_caps");
         if (key_result == ESP_OK) key_result = nvs_commit(handle);
         nvs_close(handle);
     } else {
         key_result = ESP_FAIL;
     }
     memset(hmac_key, 0, sizeof(hmac_key));
+    memset(&paired_host, 0, sizeof(paired_host));
     has_hmac_key = false;
     control_subscribed = false;
     audio_subscribed = false;

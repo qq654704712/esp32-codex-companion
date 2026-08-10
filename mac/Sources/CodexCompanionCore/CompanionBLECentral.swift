@@ -2,6 +2,18 @@
 @preconcurrency import CoreBluetooth
 import Foundation
 
+public struct CompanionBLEDeviceCandidate: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let name: String
+    public let rssi: Int
+
+    public init(id: UUID, name: String, rssi: Int) {
+        self.id = id
+        self.name = name
+        self.rssi = rssi
+    }
+}
+
 struct BLEConnectionReadiness: Equatable, Sendable {
     var controlNotifications = false
     var audioNotifications = false
@@ -18,6 +30,9 @@ struct BLEConnectionReadiness: Equatable, Sendable {
 
 @MainActor
 public final class CompanionBLECentral: NSObject {
+    public static let selectionDidChangeNotification = Notification.Name(
+        "com.codexcompanion.selectedBLEDeviceDidChange"
+    )
     public static let serviceUUID = CBUUID(string: "4F50454E-4149-434F-4445-584D49430001")
     public static let controlUUID = CBUUID(string: "4F50454E-4149-434F-4445-584D49430002")
     public static let audioUUID = CBUUID(string: "4F50454E-4149-434F-4445-584D49430003")
@@ -37,6 +52,8 @@ public final class CompanionBLECentral: NSObject {
     public var onStateChange: ((State) -> Void)?
     public var onControlMessage: ((Data) -> Void)?
     public var onAudioError: ((Error) -> Void)?
+    public var onCandidatesChange: (([CompanionBLEDeviceCandidate]) -> Void)?
+    public var onSelectedDeviceChange: ((UUID?) -> Void)?
     /// Any authenticated notification proves that the BLE transport is alive.
     /// Audio must count here too: a long press-to-talk stream can legitimately
     /// carry audio continuously while a control ACK is delayed behind it.
@@ -61,6 +78,13 @@ public final class CompanionBLECentral: NSObject {
     private let audioPipeline: AudioFramePipeline
     public private(set) var sharedKey: Data?
     private let keyManager: ApplicationKeyManager
+    private let identityStore = HostProvisioningIdentityStore()
+    private let selectionDefaults = UserDefaults.standard
+    private let selectedDeviceDefaultsKey = "companion.selected-ble-device.v1"
+    private var candidates: [UUID: CompanionBLEDeviceCandidate] = [:]
+    private var candidatePeripherals: [UUID: CBPeripheral] = [:]
+    private var userSelectionScan = false
+    public private(set) var selectedDeviceID: UUID?
     private var keyLoadInFlight = false
     private enum ScanMode: String {
         case serviceFiltered = "服务扫描"
@@ -71,6 +95,8 @@ public final class CompanionBLECentral: NSObject {
     private var outboundControlFrameID: UInt16 = 0
     private var controlReassembler = BLEControlReassembler()
     private var readiness = BLEConnectionReadiness()
+    private var provisioningRetryCount = 0
+    private let maximumProvisioningRetries = 5
 
     private func trace(_ message: String) {
         FileHandle.standardError.write(Data("[Codex BLE] \(message)\n".utf8))
@@ -82,6 +108,11 @@ public final class CompanionBLECentral: NSObject {
     ) {
         audioPipeline = AudioFramePipeline(sink: audioSink)
         self.keyManager = keyManager
+        if let value = UserDefaults.standard.string(
+            forKey: "companion.selected-ble-device.v1"
+        ) {
+            selectedDeviceID = UUID(uuidString: value)
+        }
         super.init()
     }
 
@@ -129,6 +160,66 @@ public final class CompanionBLECentral: NSObject {
         } else {
             scan()
         }
+    }
+
+    public func discoverDevices() {
+        userSelectionScan = true
+        candidates.removeAll()
+        candidatePeripherals.removeAll()
+        onCandidatesChange?([])
+        _ = central
+        guard central.state == .poweredOn else { return }
+        central.scanForPeripherals(
+            withServices: [Self.serviceUUID],
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+        )
+    }
+
+    public func selectDevice(id: UUID) {
+        guard let target = candidatePeripherals[id] else { return }
+        userSelectionScan = false
+        selectedDeviceID = id
+        Self.persistSelectedDeviceID(id)
+        onSelectedDeviceChange?(id)
+        central.stopScan()
+        if peripheral?.identifier == id, state == .connected { return }
+        if let peripheral { central.cancelPeripheralConnection(peripheral) }
+        self.peripheral = target
+        target.delegate = self
+        state = .connecting
+        central.connect(target)
+    }
+
+    public func forgetSelectedDevice() {
+        selectedDeviceID = nil
+        Self.persistSelectedDeviceID(nil)
+        onSelectedDeviceChange?(nil)
+        discoverDevices()
+    }
+
+    public static func persistSelectedDeviceID(_ id: UUID?) {
+        let defaults = UserDefaults.standard
+        let key = "companion.selected-ble-device.v1"
+        if let id {
+            defaults.set(id.uuidString, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.synchronize()
+        DistributedNotificationCenter.default().post(
+            name: selectionDidChangeNotification,
+            object: nil
+        )
+    }
+
+    public func reloadSelectedDeviceAndReconnect() {
+        let value = selectionDefaults.string(forKey: selectedDeviceDefaultsKey)
+        let updated = value.flatMap(UUID.init(uuidString:))
+        guard updated != selectedDeviceID else { return }
+        selectedDeviceID = updated
+        onSelectedDeviceChange?(updated)
+        userSelectionScan = false
+        reconnect()
     }
 
     /// Opens a new authenticated PTT audio session. The firmware sends the
@@ -193,6 +284,61 @@ public final class CompanionBLECentral: NSObject {
         if readiness.isReady { state = .connected }
     }
 
+    private func writeProvisioningKey(
+        to peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) {
+        guard let sharedKey else {
+            state = .failed("application key unavailable")
+            return
+        }
+        let profile = HostProvisioningProfile(
+            hostID: identityStore.loadOrCreateID(),
+            displayName: identityStore.safeDisplayName(),
+            capabilities: .macCompanion,
+            pairingSecret: sharedKey
+        )
+        guard let packet = try? profile.encode() else {
+            state = .failed("无法生成主机配对资料")
+            return
+        }
+        peripheral.writeValue(packet, for: characteristic, type: .withResponse)
+    }
+
+    private func isTransientSecurityError(_ error: Error) -> Bool {
+        let error = error as NSError
+        guard error.domain == CBATTErrorDomain else { return false }
+        return error.code == CBATTError.insufficientEncryption.rawValue ||
+               error.code == CBATTError.insufficientAuthentication.rawValue
+    }
+
+    private func retryProvisioningAfterSecurityHandshake(
+        peripheral expectedPeripheral: CBPeripheral,
+        characteristic expectedCharacteristic: CBCharacteristic
+    ) {
+        guard provisioningRetryCount < maximumProvisioningRetries else {
+            state = .failed("蓝牙加密握手超时")
+            central.cancelPeripheralConnection(expectedPeripheral)
+            return
+        }
+        provisioningRetryCount += 1
+        let attempt = provisioningRetryCount
+        state = .connecting
+        trace("等待蓝牙加密后重试配对（\(attempt)/\(maximumProvisioningRetries)）")
+        Task { @MainActor [weak self, weak expectedPeripheral] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self,
+                  let expectedPeripheral,
+                  self.peripheral === expectedPeripheral,
+                  self.provisionCharacteristic === expectedCharacteristic,
+                  !self.readiness.provisioned else { return }
+            self.writeProvisioningKey(
+                to: expectedPeripheral,
+                characteristic: expectedCharacteristic
+            )
+        }
+    }
+
     private func resumeScanningAfterConnectionFailure() {
         // A device firmware refresh can invalidate its bonded-peer database.
         // Drop the stale CBPeripheral object before the next scan so that, once
@@ -202,7 +348,7 @@ public final class CompanionBLECentral: NSObject {
             try? await Task.sleep(for: .seconds(2))
             guard let self, self.state != .connected else { return }
             self.peripheral = nil
-            self.scan()
+            if !self.userSelectionScan { self.scan() }
         }
     }
 }
@@ -253,9 +399,27 @@ extension CompanionBLECentral: CBCentralManagerDelegate {
                               advertisedName == Self.shortAdvertisedName ||
                               (advertisesCompanionService &&
                                discoveredName.contains("Codex"))
-            guard self.peripheral == nil,
-                  isCompanion else {
-                return
+            guard isCompanion else { return }
+            let candidate = CompanionBLEDeviceCandidate(
+                id: peripheral.identifier,
+                name: discoveredName,
+                rssi: rssi
+            )
+            self.candidates[peripheral.identifier] = candidate
+            self.candidatePeripherals[peripheral.identifier] = peripheral
+            self.onCandidatesChange?(self.candidates.values.sorted {
+                if $0.rssi == $1.rssi { return $0.name < $1.name }
+                return $0.rssi > $1.rssi
+            })
+            guard !self.userSelectionScan, self.peripheral == nil else { return }
+            if let selectedDeviceID = self.selectedDeviceID,
+               selectedDeviceID != peripheral.identifier { return }
+            if self.selectedDeviceID == nil {
+                // Migrate the old auto-connect behavior once, then make future
+                // device changes an explicit dashboard action.
+                self.selectedDeviceID = peripheral.identifier
+                Self.persistSelectedDeviceID(peripheral.identifier)
+                self.onSelectedDeviceChange?(peripheral.identifier)
             }
             print("[Codex BLE] discovered \(discoveredName), RSSI \(rssi)")
             central.stopScan()
@@ -279,6 +443,7 @@ extension CompanionBLECentral: CBCentralManagerDelegate {
         error: Error?
     ) {
         Task { @MainActor in
+            guard self.peripheral?.identifier == peripheral.identifier else { return }
             print("[Codex BLE] connection failed: \(error?.localizedDescription ?? "unknown")")
             state = .failed(error?.localizedDescription ?? "connection failed")
             resumeScanningAfterConnectionFailure()
@@ -293,13 +458,16 @@ extension CompanionBLECentral: CBCentralManagerDelegate {
         error: Error?
     ) {
         Task { @MainActor in
+            guard self.peripheral?.identifier == peripheral.identifier else { return }
             print("[Codex BLE] disconnected: \(error?.localizedDescription ?? "clean disconnect")")
             controlCharacteristic = nil
             audioCharacteristic = nil
             provisionCharacteristic = nil
+            provisioningRetryCount = 0
             readiness.reset()
             state = error == nil ? .disconnected : .failed(error!.localizedDescription)
-            scan()
+            self.peripheral = nil
+            if !self.userSelectionScan { scan() }
         }
     }
 }
@@ -337,6 +505,7 @@ extension CompanionBLECentral: CBPeripheralDelegate {
                 return
             }
             readiness.reset()
+            provisioningRetryCount = 0
             controlCharacteristic = service.characteristics?.first(where: { $0.uuid == Self.controlUUID })
             audioCharacteristic = service.characteristics?.first(where: { $0.uuid == Self.audioUUID })
             provisionCharacteristic = service.characteristics?.first(where: { $0.uuid == Self.provisionUUID })
@@ -349,14 +518,9 @@ extension CompanionBLECentral: CBPeripheralDelegate {
             print("[Codex BLE] characteristics ready; enabling notifications and provisioning")
             peripheral.setNotifyValue(true, for: controlCharacteristic)
             peripheral.setNotifyValue(true, for: audioCharacteristic)
-            if let sharedKey {
-                // An encrypted write asks macOS to pair. A provisioned device
-                // rejects replacement, while a factory-new device stores it.
-                peripheral.writeValue(sharedKey, for: provisionCharacteristic, type: .withResponse)
-            } else {
-                state = .failed("application key unavailable")
-                return
-            }
+            // An encrypted write asks macOS to pair. A provisioned device
+            // rejects replacement, while a factory-new device stores it.
+            writeProvisioningKey(to: peripheral, characteristic: provisionCharacteristic)
             state = .connecting
         }
     }
@@ -391,10 +555,18 @@ extension CompanionBLECentral: CBPeripheralDelegate {
             guard characteristic.uuid == Self.provisionUUID else { return }
             if let error {
                 print("[Codex BLE] provisioning failed: \(error.localizedDescription)")
+                if isTransientSecurityError(error) {
+                    retryProvisioningAfterSecurityHandshake(
+                        peripheral: peripheral,
+                        characteristic: characteristic
+                    )
+                    return
+                }
                 state = .failed(error.localizedDescription)
                 return
             }
             print("[Codex BLE] provisioning acknowledged")
+            provisioningRetryCount = 0
             readiness.provisioned = true
             completeConnectionIfReady()
         }

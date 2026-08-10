@@ -29,6 +29,8 @@ struct CompanionRootView: View {
                 switch selection ?? .dashboard {
                 case .dashboard:
                     CompanionDashboardView(model: model)
+                case .weather:
+                    WeatherConfigurationView(model: model)
                 case .keyMappings:
                     KeyMappingsView(model: model)
                 case .audio:

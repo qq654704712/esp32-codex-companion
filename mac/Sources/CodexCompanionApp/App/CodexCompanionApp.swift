@@ -50,7 +50,7 @@ final class CodexCompanionAppDelegate: NSObject, NSApplicationDelegate {
         browser.stateUpdateHandler = { state in
             if case .waiting(let error) = state {
                 FileHandle.standardError.write(
-                    Data("[Codex Wi-Fi] local-network permission pending: \(error)\\n".utf8)
+                    Data("[Codex Wi-Fi] local-network permission pending: \(error)\n".utf8)
                 )
             }
         }
@@ -73,7 +73,7 @@ struct CodexCompanionApp: App {
 
         Settings {
             CompanionSettingsView(model: model)
-                .frame(width: 500, height: 310)
+                .frame(width: 520, height: 380)
         }
     }
 }

@@ -6,7 +6,7 @@ final class CodexMicRouteManagerTests: XCTestCase {
         let api = RecordingCoreAudioAPI(defaultInput: 11, codexMic: 22)
         let manager = CodexMicRouteManager(api: api, confirmationAttempts: 1)
 
-        try manager.prepareCodexMic()
+        try manager.prepareInput(.codexMic)
         manager.restorePreviousRoute()
 
         XCTAssertEqual(api.setCalls, [22, 11])
@@ -16,19 +16,28 @@ final class CodexMicRouteManagerTests: XCTestCase {
         let api = RecordingCoreAudioAPI(defaultInput: 11, codexMic: nil)
         let manager = CodexMicRouteManager(api: api, confirmationAttempts: 1)
 
-        XCTAssertThrowsError(try manager.prepareCodexMic()) { error in
+        XCTAssertThrowsError(try manager.prepareInput(.codexMic)) { error in
             XCTAssertEqual(error as? AudioRouteError, .codexMicNotFound)
         }
         XCTAssertTrue(api.setCalls.isEmpty)
     }
 
-    func testNativeUSBMicrophoneIsPreferredOverVirtualDriver() throws {
+    func testUSBRouteSelectsNativeMicrophone() throws {
         let api = RecordingCoreAudioAPI(defaultInput: 11, codexMic: 22, usbMic: 33)
         let manager = CodexMicRouteManager(api: api, confirmationAttempts: 1)
 
-        try manager.prepareCodexMic()
+        try manager.prepareInput(.usbHardware)
 
         XCTAssertEqual(api.setCalls, [33])
+    }
+
+    func testWirelessRouteKeepsCodexMicEvenWhenUSBIsPresent() throws {
+        let api = RecordingCoreAudioAPI(defaultInput: 11, codexMic: 22, usbMic: 33)
+        let manager = CodexMicRouteManager(api: api, confirmationAttempts: 1)
+
+        try manager.prepareInput(.codexMic)
+
+        XCTAssertEqual(api.setCalls, [22])
     }
 }
 

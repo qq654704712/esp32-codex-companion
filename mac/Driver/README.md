@@ -12,3 +12,25 @@ sample but publishes only the input device required by this project.
 Build with `scripts/build-driver.sh`. Installation and removal require an
 administrator and intentionally live in separate scripts. Do not install the
 driver until the Mac-side tests and signature verification pass.
+
+The product build reports USB-compatible transport metadata because Doubao
+Input Method 0.9.4 was physically observed to enumerate and record wireless
+audio only after that metadata change. The audio path itself remains ESP32 →
+Wi-Fi → Companion socket → HAL; the handheld device is not cabled.
+
+Build and test the deployed compatibility driver with:
+
+```sh
+scripts/build-driver.sh
+```
+
+To restore the standards-oriented CoreAudio `virtual` transport for regression
+testing, use the explicit reversible override:
+
+```sh
+CODEX_MIC_COMPAT_USB_TRANSPORT=0 scripts/build-driver.sh
+```
+
+Do not generalize the Doubao result to every application. WeChat and Doubao are
+the two physically observed clients; each additional target still needs an
+actual recording test.

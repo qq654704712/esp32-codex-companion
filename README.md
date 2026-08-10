@@ -1,13 +1,14 @@
 # ESP32-S3 Codex Companion
 
 面向 Waveshare `ESP32-S3-Touch-LCD-1.85B` 的 Codex 桌面伴侣。项目没有绑定任何
-输入法 SDK：设备提供 BLE 无线音频与 PTT 事件，macOS 暴露标准 `Codex Mic`
+输入法 SDK：设备提供 Wi-Fi/BLE 无线音频与 PTT 事件，macOS 暴露标准 `Codex Mic`
 输入设备，并按用户录制的物理键码快捷键启动或停止当前第三方输入法的语音功能。
 
-当前日常模式是 **Wi-Fi 状态/审批/PTT 控制 + USB 原生麦克风兼容**：设备经局域网
-自动发现已配对的 Mac，控制帧使用 CCH2 握手与 CCW2 ChaCha20-Poly1305 加密；需要
-第三方输入法识别“物理麦克风”时，在设备 Connection Center 启用 `USB MIC`，它会以
-`Codex Companion USB Mic` 出现在 macOS。BLE 仍保留作初始配对、恢复和非 USB 音频。
+当前日常模式是 **Wi-Fi 状态/审批/PTT 控制 + 加密 UDP 麦克风 + 严格输入法兼容标识 + USB 原生备用**：
+设备经局域网自动发现已配对的 Mac，控制和音频帧使用 CCH2 握手派生的独立 CCW2
+ChaCha20-Poly1305 密钥；Wi-Fi 不可用时，下一次 PTT 会回退到 BLE ADPCM。需要
+Mac 端 `Codex Mic` 使用已实测的 USB 兼容 transport 元数据，但音频仍全程来自
+Wi-Fi，手持设备无须接线。真实 USB UAC 只作为其他不兼容应用的硬件备用。
 
 ## 模块
 
@@ -80,10 +81,14 @@ codex plugin add codex-companion-hooks@codex-companion-local
 3. 设备取得 IP 后，会通过 `_codex-companion._tcp` 自动发现 Mac 并完成已配对密钥
    握手。若路由器禁用组播、或 Mac 尚未授权本地网络，请把连接中心显示的 Mac IPv4
    填入网页的 `Mac IPv4 fallback`；设备会保存这个备用端点，并且仍以已配对密钥认证。
-   Mac 连接中心显示“已连接”才表示控制链路可用。
-4. 需要解决第三方输入法拒绝虚拟麦克风时，在设备 `LINK` 内点 `USB MIC: OFF`。
-   设备会重启并重新枚举；在 macOS 声音设置或输入法中选择 `Codex Companion USB Mic`。
-   BOOT 的按住/松开仍由 Wi-Fi/BLE 控制映射到 Mac 端已录制的快捷键。
+   Mac 连接中心显示“已连接”才表示控制和 UDP `49154` 音频端点均可用。正常无线使用
+   时按住 BOOT 即通过 `Codex Mic` 输入；一次按住期间不会在 Wi-Fi/BLE 之间切换。
+   松开 BOOT 后设备保留 8 秒待发送窗口；在窗口内短按两次 BOOT 才会让 Mac 注入
+   Return 提交文字。第一次短按只进入确认态，第二次可在原 8 秒窗口结束前完成；
+   长按会开始下一次语音，不会误发。
+4. 产品驱动默认使用严格输入法兼容标识；豆包输入法 0.9.4 已实测能在设备
+   不接 USB 时通过 `Codex Mic` 识别并转成文字。如其他应用仍拒绝该输入，
+   才在设备 `LINK` 内启用 `USB MIC` 硬件备用。
 5. 更换 Mac、配对密钥失效或 BLE 长期无法恢复时，在设备 `LINK` 内长按
    `RESET BLE PAIRING` 1.5 秒。设备会删除旧 BLE bond 与应用配对密钥并重新广播；
    保持 Companion 常驻运行即可重新配对。若 macOS 仍保留旧系统 bond，请在系统蓝牙

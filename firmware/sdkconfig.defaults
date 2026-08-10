@@ -17,7 +17,13 @@ CONFIG_SPIRAM_SPEED_80M=y
 # has contiguous internal memory available.
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+# Secure pairing, encrypted provisioning and the CCP2 host profile all execute
+# on NimBLE's host task. The 4 KB default overflows immediately after macOS
+# enables both notification characteristics; 8 KB leaves headroom for the
+# mbedTLS and NVS call chains used during that handshake.
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
@@ -44,6 +50,11 @@ CONFIG_UAC_MIC_INTERVAL_MS=20
 CONFIG_UAC_SUPPORT_MACOS=y
 # CCW2 Wi-Fi control frames use ChaCha20-Poly1305. ESP-IDF disables this
 # optional primitive by default, so all three dependencies are explicit.
-CONFIG_MBEDTLS_POLY1305_C=y
 CONFIG_MBEDTLS_CHACHA20_C=y
 CONFIG_MBEDTLS_CHACHAPOLY_C=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+# The OS shell keeps several screens resident so horizontal swipes are instant.
+# Give LVGL enough heap for those objects. main/lvgl_psram.lf places the pool
+# in PSRAM so Wi-Fi/BLE and the display DMA pipeline retain internal RAM.
+CONFIG_LV_MEM_SIZE_KILOBYTES=80
+CONFIG_ESP_TASK_WDT_PANIC=y

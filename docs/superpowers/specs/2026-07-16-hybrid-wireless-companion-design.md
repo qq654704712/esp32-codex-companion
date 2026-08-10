@@ -23,7 +23,11 @@ ESP32-S3 的蓝牙能力为 Bluetooth LE；本设计不把它包装为 Bluetooth
 
 ### 输入法兼容性
 
-Wi-Fi 只改变设备到 Mac 的传输方式。若 Mac 最终仍通过 `Codex Mic` CoreAudio HAL 虚拟输入向应用提供音频，任何拒绝虚拟设备的输入法仍可能拒绝它。该限制不能靠换成 UDP、WebSocket 或 BLE 绕过。
+Wi-Fi 只改变设备到 Mac 的传输方式。若 `Codex Mic` 报告标准 CoreAudio `virtual`
+transport，严格输入法仍可能在打开 IO 前将它过滤。Mac 驱动因此提供可回退的
+USB 兼容 transport 元数据；这不改变 ESP32→Wi-Fi→Mac 音频路径，也不要求手持设备接线。
+豆包输入法 0.9.4 已在 2026-07-17 实机验证该路径可识别并转成文字；不将此结果
+泛化为所有应用的兼容承诺。
 
 USB UAC 是这一限制的明确对照和兼容路径：Mac 将设备识别为标准 USB 输入设备，而不经过 `Codex Mic` 的音频注入。只有实际测试后，才可声称某输入法支持无线或 USB 模式。
 
@@ -66,7 +70,8 @@ USB UAC 是这一限制的明确对照和兼容路径：Mac 将设备识别为�
 2. 设备立即显示明显的波纹和音量电平；提示音仅在麦克风门打开前播放。
 3. Mac Companion 收到 PTT，按用户的通用快捷键配置启动当前输入法语音功能。
 4. Wi-Fi 音频帧写入 `Codex Mic`；松开 BOOT 后发送尾音、释放/触发停止快捷键并恢复状态。
-5. 若输入法拒绝 `Codex Mic`，连接中心显示“此输入法不接受无线虚拟麦克风”，并提供 USB Compatibility 的明确操作说明，不伪造成功。
+5. 驱动默认使用已实机验证的严格输入法兼容标识；若目标应用仍不打开
+   `Codex Mic` IO，连接中心才提供真实 USB UAC 备用，不伪造录音成功。
 
 ## 架构
 
@@ -167,7 +172,7 @@ State messages carry `sessionID`, `turnID`, monotonic revision and expiry. A rec
 - Reboot, sleep/wake, host switch, wrong pairing code and 100 repeated PTT sessions have automated/state-machine coverage.
 - SoftAP brute force/timeout, malicious UDP replay/reordering, mDNS spoofing, macOS firewall/local-network denial, AP isolation, agent restart, GUI close, USB re-enumeration and UAC-to-flash recovery each have an explicit test.
 - USB UAC is exposed as a standard macOS input device and has one real recording validation plus separate validation in each target input method.
-- The product does not claim Doubao wireless support until it is observed to capture from `Codex Mic`; it does not claim USB compatibility until a real Doubao USB-UAC session succeeds.
+- Doubao Input Method 0.9.4 wireless capture from `Codex Mic` is physically validated on 2026-07-17 with USB-compatible transport metadata; USB-UAC compatibility remains a separate, unvalidated claim until a real USB session succeeds.
 
 ## Out of scope for V2
 

@@ -10,12 +10,29 @@ Service UUID: `4F50454E-4149-434F-4445-584D49430001`
 | Audio | `0003` | device to Mac | notify over bonded link |
 | Provision | `0004` | Mac to device once | encrypted write |
 
-The device uses BLE Secure Connections and bonding. On a factory-new device,
-the Mac creates 32 random bytes in Keychain and writes them to Provision after
-link encryption is established. The device stores the first key in NVS,
-accepts the same value idempotently on bonded reconnects, and rejects any
-replacement. This key authenticates control envelopes; it is never compiled
-into either binary.
+The device uses BLE Secure Connections and bonding. Provisioning accepts the
+legacy 32-byte secret and the versioned `CCP2` host profile below. New clients
+SHOULD send `CCP2`; retaining the legacy value lets already shipped clients
+reconnect after a firmware upgrade.
+
+```text
+"CCP2" | version u8 (1) | capabilities u8 |
+hostIDLength u8 | displayNameLength u8 | pairingSecret[32] |
+hostID UTF-8 | displayName UTF-8
+```
+
+`hostID` is 1...48 bytes and `displayName` is 1...64 bytes. Capability bits
+are USB audio, USB control, BLE control, BLE audio, Wi-Fi control and Wi-Fi
+audio from bit 0 through bit 5. The device stores the first secret and host
+metadata in NVS, accepts the same secret idempotently, and rejects replacement
+until the user explicitly chooses **Pair another device**. The pairing secret
+authenticates both BLE control envelopes and the Wi-Fi session handshake; it is
+never compiled into either binary.
+
+The capability field describes what a host client implements; it does not turn
+the custom BLE protocol into a standard Bluetooth microphone profile. A new
+OS can interoperate by implementing this specification. USB UAC audio remains
+class-compliant and requires no Companion client.
 
 ## BLE control fragmentation
 
@@ -67,6 +84,8 @@ State IDs are stable and are not derived from display strings:
 | 8 | confirmationRequired |
 | 9 | listening |
 | 10 | voiceError |
+| 11 | writing (legacy; rendered as working) |
+| 12 | running |
 
 - `stateUpdate`: `{0: stateID}`
 - `quotaUpdate`: `{0: fiveHourRemaining, 1: weekRemaining}` where `0...100`
@@ -74,6 +93,13 @@ State IDs are stable and are not derived from display strings:
 - `heartbeat`: `{0: quotaFresh}`. This keeps the device's stale marker accurate
   without retransmitting unchanged quota values; the flag is true only when the
   Mac completed a quota refresh within the previous 120 seconds.
+- `taskEvent` (message type 14): `{0: kind}` where `0` is a real turn start and
+  `1` is a real `task_complete`. These transient events are queued independently
+  from `stateUpdate`, so a persistent running state cannot hide another
+  conversation's start/completion animation or 8-bit sound.
+- `submit` (message type 15): `{}`. The device emits it only after a completed
+  PTT release followed by two debounced short BOOT clicks inside the 8-second
+  submit window. The Mac maps it to the main-keyboard Return key code (`36`).
 - `pttDown`, `pttUp`, `ack`, `promptClose`: `{}`.
 - `promptOpen`: `{0: promptID, 1: [{0: AXIdentifier, 1: title,
   2: requiresLongPress}, ...]}`. Maximum eight scrollable options. Options without a stable

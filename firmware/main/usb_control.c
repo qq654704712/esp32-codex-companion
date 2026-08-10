@@ -8,14 +8,16 @@
 
 static QueueHandle_t g_rx_queue;
 static cc_usb_control_line_fn g_line_callback;
-static char g_line[40];
+// Prompt CBOR is base64-wrapped for the physical USB sideband. The encrypted
+// radio packet limit is 512 bytes, so 768 bytes bounds the expanded line too.
+static char g_line[768];
 static size_t g_line_length;
 static bool g_host_seen;
 
 void cc_usb_control_start(cc_usb_control_line_fn line_callback) {
     g_line_callback = line_callback;
     g_host_seen = false;
-    if (!g_rx_queue) g_rx_queue = xQueueCreate(96, sizeof(uint8_t));
+    if (!g_rx_queue) g_rx_queue = xQueueCreate(768, sizeof(uint8_t));
 }
 
 // TinyUSB calls this from its own task. Keep it bounded and defer all UI/model

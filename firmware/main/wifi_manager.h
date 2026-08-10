@@ -38,6 +38,8 @@ bool cc_wifi_is_valid_ipv4(const char *value);
 
 /** Starts the persistent Wi-Fi subsystem without opening a provisioning AP. */
 bool cc_wifi_start(void);
+/** Disable modem sleep only for latency-sensitive Wi-Fi microphone frames. */
+void cc_wifi_set_realtime(bool enabled);
 /** Opens the locally-confirmed, time-limited setup portal. */
 bool cc_wifi_begin_provisioning(void);
 cc_wifi_state_t cc_wifi_status(void);

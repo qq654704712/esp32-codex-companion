@@ -71,8 +71,13 @@ public final class CodexAppServerClient: @unchecked Sendable {
         let input = Pipe()
         let output = Pipe()
         let errors = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [executable, "app-server"]
+        guard let executableURL = Self.resolveExecutable(executable) else {
+            throw CodexAppServerError.launchFailed(
+                "Codex executable was not found in PATH or the Codex/ChatGPT app bundle"
+            )
+        }
+        process.executableURL = executableURL
+        process.arguments = ["app-server"]
         process.standardInput = input
         process.standardOutput = output
         process.standardError = errors
@@ -111,6 +116,37 @@ public final class CodexAppServerClient: @unchecked Sendable {
             response,
             updatedAt: Int64(Date().timeIntervalSince1970)
         )
+    }
+
+    /// LaunchAgents inherit a minimal PATH and normally cannot see the Codex
+    /// binary embedded in the desktop app. Resolve that bundle explicitly so
+    /// background quota refresh behaves the same as an interactive shell.
+    public static func resolveExecutable(
+        _ requested: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        var candidates: [String] = []
+        if requested.contains("/") {
+            candidates.append((requested as NSString).expandingTildeInPath)
+        } else {
+            if let override = environment["CODEX_EXECUTABLE"], !override.isEmpty {
+                candidates.append((override as NSString).expandingTildeInPath)
+            }
+            for directory in (environment["PATH"] ?? "").split(separator: ":") {
+                candidates.append(String(directory) + "/" + requested)
+            }
+            candidates += [
+                "/Applications/ChatGPT.app/Contents/Resources/codex",
+                "/Applications/Codex.app/Contents/Resources/codex",
+                FileManager.default.homeDirectoryForCurrentUser.path
+                    + "/Applications/ChatGPT.app/Contents/Resources/codex",
+                FileManager.default.homeDirectoryForCurrentUser.path
+                    + "/Applications/Codex.app/Contents/Resources/codex",
+            ]
+        }
+        return candidates.first(where: { fileManager.isExecutableFile(atPath: $0) })
+            .map(URL.init(fileURLWithPath:))
     }
 
     private func send(_ object: [String: Any], to handle: FileHandle) throws {

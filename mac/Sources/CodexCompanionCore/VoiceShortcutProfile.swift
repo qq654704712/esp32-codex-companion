@@ -28,6 +28,9 @@ public struct KeyboardShortcut: Codable, Equatable, Sendable {
         self.modifiers = modifiers
         self.modifierOnly = modifierOnly
     }
+
+    /// macOS virtual key code for Return on the main keyboard.
+    public static let returnKey = KeyboardShortcut(keyCode: 36)
 }
 
 public enum VoiceProfileMatchPolicy: String, Codable, Sendable {

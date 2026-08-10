@@ -24,7 +24,8 @@ public struct CompanionControlReducer {
     @discardableResult
     public mutating func reduce(hook: CodexHookEvent) -> RevisionedDeviceState {
         revision &+= 1
-        let approval = hook.state == .approvalRequired || hook.state == .confirmationRequired
+        let approval = hook.state == .approvalRequired || hook.state == .inputRequired ||
+            hook.state == .confirmationRequired
         let snapshot = RevisionedDeviceState(
             state: hook.state,
             sessionID: hook.sessionID,

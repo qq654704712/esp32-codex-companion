@@ -38,8 +38,7 @@ public enum CodexHookEventParser {
         case "SessionStart": state = .sessionStarting
         case "UserPromptSubmit": state = .working
         case "PreToolUse":
-            state = ["apply_patch", "write_file", "replace_file"].contains(payload.toolName)
-                ? .writing : .running
+            state = .running
         case "PostToolUse":
             state = payload.status == "failed" || payload.status == "error" ? .error : .working
         case "PermissionRequest": state = .approvalRequired

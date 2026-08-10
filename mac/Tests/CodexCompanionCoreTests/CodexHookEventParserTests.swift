@@ -45,7 +45,7 @@ final class CodexHookEventParserTests: XCTestCase {
             {"hook_event_name":"PostToolUse","status":"failed","tool_name":"exec_command"}
             """.utf8)
 
-        XCTAssertEqual(try XCTUnwrap(CodexHookEventParser.parse(beforeTool)).state, .writing)
+        XCTAssertEqual(try XCTUnwrap(CodexHookEventParser.parse(beforeTool)).state, .running)
         XCTAssertEqual(try XCTUnwrap(CodexHookEventParser.parse(afterTool)).state, .working)
         XCTAssertEqual(try XCTUnwrap(CodexHookEventParser.parse(failedTool)).state, .error)
     }

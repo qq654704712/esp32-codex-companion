@@ -15,6 +15,10 @@ public enum ControlMessageType: UInt16, Codable, CaseIterable, Sendable {
     case audioLevel = 11
     case ack = 12
     case error = 13
+    case taskEvent = 14
+    case submit = 15
+    case weatherUpdate = 16
+    case weatherConfig = 17
 }
 
 public struct ControlEnvelope: Equatable, Sendable {

@@ -2,6 +2,13 @@ import XCTest
 @testable import CodexCompanionCore
 
 final class CodexRateLimitParserTests: XCTestCase {
+    func testExplicitExecutablePathResolvesWithoutShellPath() {
+        XCTAssertEqual(
+            CodexAppServerClient.resolveExecutable("/bin/echo", environment: [:])?.path,
+            "/bin/echo"
+        )
+    }
+
     func testParserPrefersCodexBucketAndMapsByDuration() throws {
         let data = Data("""
         {

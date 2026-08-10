@@ -53,6 +53,20 @@ int main(void) {
     cc_sequence_guard_reset(&guard);
     assert(cc_sequence_guard_accept(&guard, 1) == CC_OK);
 
+    envelope.message_type = CC_MSG_TASK_EVENT;
+    assert(cc_encode_envelope(&envelope, key, sizeof(key), encoded,
+                              sizeof(encoded), &encoded_len) == CC_OK);
+    assert(cc_decode_envelope(encoded, encoded_len, key, sizeof(key), &decoded,
+                              decoded_payload, sizeof(decoded_payload)) == CC_OK);
+    assert(decoded.message_type == CC_MSG_TASK_EVENT);
+
+    envelope.message_type = CC_MSG_SUBMIT;
+    assert(cc_encode_envelope(&envelope, key, sizeof(key), encoded,
+                              sizeof(encoded), &encoded_len) == CC_OK);
+    assert(cc_decode_envelope(encoded, encoded_len, key, sizeof(key), &decoded,
+                              decoded_payload, sizeof(decoded_payload)) == CC_OK);
+    assert(decoded.message_type == CC_MSG_SUBMIT);
+
     puts("control protocol tests passed");
     return 0;
 }

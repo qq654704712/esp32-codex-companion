@@ -23,6 +23,17 @@ constexpr AudioObjectID kStreamObject = 3;
 constexpr Float64 kSampleRate = 48'000.0;
 constexpr UInt32 kBufferFrames = 512;
 constexpr std::size_t kRingCapacity = 48'000 * 4;
+#if defined(CODEX_MIC_COMPAT_USB_TRANSPORT)
+// Some microphone pickers enumerate Codex Mic through AVFoundation but then
+// discard every CoreAudio device whose transport is `virtual`.  This opt-in
+// compatibility build changes only the transport metadata; audio still comes
+// from the authenticated local Companion socket and remains fully wireless.
+// The product build enables this after physical validation with Doubao 0.9.4;
+// a standards-oriented virtual transport build remains available explicitly.
+constexpr UInt32 kReportedTransportType = kAudioDeviceTransportTypeUSB;
+#else
+constexpr UInt32 kReportedTransportType = kAudioDeviceTransportTypeVirtual;
+#endif
 
 std::atomic<ULONG> gRefCount{0};
 std::atomic<UInt32> gRunningClients{0};
@@ -356,8 +367,8 @@ OSStatus GetPropertyData(AudioServerPlugInDriverRef driver, AudioObjectID object
                 return writeString(CFSTR("com.codexcompanion.mic.model"), available,
                                    written, output);
             case kAudioDevicePropertyTransportType:
-                return writeScalar<UInt32>(kAudioDeviceTransportTypeVirtual, available,
-                                           written, output);
+                return writeScalar<UInt32>(kReportedTransportType, available, written,
+                                           output);
             case kAudioDevicePropertyClockDomain:
                 return writeScalar<UInt32>(0, available, written, output);
             case kAudioDevicePropertyDeviceIsAlive:

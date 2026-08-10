@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Do not implement input-method brand detection, private preference reads, private SDKs, or direct text injection.
-- Wi-Fi does not change the fact that `Codex Mic` is virtual; never claim it fixes an IME that rejects virtual microphones.
+- `Codex Mic` audio remains wireless, while the product driver reports USB-compatible transport metadata for strict microphone pickers. Doubao Input Method 0.9.4 is physically validated; do not generalize that result to untested applications, and keep `CODEX_MIC_COMPAT_USB_TRANSPORT=0` as the standards-oriented regression build.
 - SAS is only a human comparison code; pair with long-lived public keys and derive unique AEAD session keys.
 - UDP audio uses 16 kHz, 16-bit, mono PCM, 20 ms frames, AEAD, sequence/replay checks and bounded jitter buffering in its first release.
 - USB UAC is a controlled reboot/re-enumeration mode; do not burn permanent USB PHY-selection eFuses and retain BOOT + power-on recovery flashing.

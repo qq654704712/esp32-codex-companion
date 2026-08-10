@@ -65,6 +65,20 @@ final class ControlEnvelopeCodecTests: XCTestCase {
         liveness.reset()
         XCTAssertFalse(liveness.isExpired(at: 1_000))
     }
+
+    func testUSBVoiceSessionDoesNotDependOnWirelessLiveness() {
+        XCTAssertFalse(VoiceSessionSource.usb.requiresPeerLiveness)
+        XCTAssertFalse(VoiceSessionSource.usb.isAffected(byLossOf: .ble))
+        XCTAssertFalse(VoiceSessionSource.usb.isAffected(byLossOf: .wifi))
+    }
+
+    func testWirelessVoiceSessionOnlyDependsOnItsOwnTransport() {
+        XCTAssertTrue(VoiceSessionSource.ble.requiresPeerLiveness)
+        XCTAssertTrue(VoiceSessionSource.ble.isAffected(byLossOf: .ble))
+        XCTAssertFalse(VoiceSessionSource.ble.isAffected(byLossOf: .wifi))
+        XCTAssertTrue(VoiceSessionSource.wifi.isAffected(byLossOf: .wifi))
+        XCTAssertFalse(VoiceSessionSource.wifi.isAffected(byLossOf: .ble))
+    }
 }
 
 private extension Data {

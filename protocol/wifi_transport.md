@@ -68,9 +68,27 @@ audio routing or grant an approval action.
 Wi-Fi control is sent over an authenticated TCP connection using the same
 payload/sequence semantics. `CCW2` already provides application-layer
 confidentiality and integrity, so this implementation does not claim TLS; a
-future TLS layer may be added without changing the inner wire format. Wi-Fi
-audio is a reserved future extension, not part of the current Wi-Fi daily + USB
-microphone delivery.
+future TLS layer may be added without changing the inner wire format.
+
+## UDP audio transport
+
+After the TCP handshake succeeds, the device sends audio datagrams to UDP port
+`49154` on the authenticated TCP peer IPv4 address. The Mac binds that port
+before advertising the TCP service and accepts packets only from the current
+peer address, session ID and audio key. Failure to create either UDP endpoint
+keeps Wi-Fi out of the microphone route so the next PTT can use BLE instead.
+
+Each datagram contains exactly one encrypted 20 ms PCM frame and is 698 bytes,
+which stays below the normal LAN MTU. Audio has its own session-wide UInt32
+sequence. It does not reset at PTT boundaries because doing so would reuse the
+`sessionID || sequence` AEAD nonce; reconnecting and deriving a fresh audio key
+is required before it may reset.
+
+The Mac buffers 60 ms for reordering, retains at most 100 ms of authenticated
+audio that races ahead of PTT_DOWN, and accepts the 200 ms post-release tail.
+A missing frame becomes 20 ms of silence. Duplicate, replayed, late, wrong-peer
+and unauthenticated datagrams are dropped. A 500 ms interval without any valid
+frame aborts the active Wi-Fi voice session.
 
 For the initial TCP implementation, each CCW2 control packet is preceded by a
 2-byte big-endian packet length. Length zero or a length above 826 bytes closes

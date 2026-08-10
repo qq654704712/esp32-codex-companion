@@ -21,10 +21,17 @@ final class CompanionControlReducerTests: XCTestCase {
         XCTAssertEqual(state.expiresAt, Date(timeIntervalSince1970: 130))
     }
 
-    func testApplyPatchUsesWritingState() throws {
+    func testPlanChoiceHasSameBoundedRemoteAuthority() {
+        var reducer = CompanionControlReducer(now: { Date(timeIntervalSince1970: 100) })
+        let state = reducer.reduce(hook: .init(state: .inputRequired))
+        XCTAssertNotNil(state.actionID)
+        XCTAssertEqual(state.expiresAt, Date(timeIntervalSince1970: 130))
+    }
+
+    func testApplyPatchUsesRunningStateWithoutWritingHeuristic() throws {
         let event = try XCTUnwrap(CodexHookEventParser.parse(Data(
             "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"apply_patch\"}".utf8
         )))
-        XCTAssertEqual(event.state, .writing)
+        XCTAssertEqual(event.state, .running)
     }
 }

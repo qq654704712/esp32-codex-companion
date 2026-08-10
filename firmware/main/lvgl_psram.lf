@@ -1,0 +1,14 @@
+[scheme:lvgl_psram]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+# LVGL's built-in allocator reserves one 80 KiB static pool.  Keeping that
+# pool in internal DRAM leaves too little contiguous memory for the Wi-Fi
+# driver to attach SoftAP mode.  Only this allocator object's BSS is moved;
+# display DMA buffers and latency-sensitive application state keep their
+# existing placement.
+[mapping:lvgl_psram_pool]
+archive: liblvgl__lvgl.a
+entries:
+    lv_mem_core_builtin (lvgl_psram)
